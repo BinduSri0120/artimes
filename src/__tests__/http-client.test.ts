@@ -497,3 +497,34 @@ function json(response: ServerResponse, body: unknown, status = 200): void {
 function jsonStringWithBytes(bytes: number): string {
   return `"${'x'.repeat(bytes - 2)}"`;
 }
+
+describe('HttpClient error and deadline contract', () => {
+  test('exports a request deadline long enough for compile-on-publish routes', async () => {
+    const { DEFAULT_REQUEST_TIMEOUT_MS } = await import('../client/http-client.js');
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(15_000);
+  });
+
+  test.each([
+    ['get', (c: HttpClient) => c.get('/api/projects/p/tables/t/rows/query')],
+    ['put', (c: HttpClient) => c.put('/api/projects/p/tables/t/rows/query', {})],
+    ['del', (c: HttpClient) => c.del('/api/projects/p/tables/t/rows/query')],
+  ] as const)('%s surfaces the upstream JSON error body', async (_name, call) => {
+    await withHttpServer(
+      (_request, response) => {
+        json(
+          response,
+          {
+            success: false,
+            error: { code: 'UNINDEXED_PREDICATE', message: 'Column x is not indexed' },
+          },
+          400,
+        );
+      },
+      async (baseUrl) => {
+        const client = new HttpClient(baseUrl);
+        await expect(call(client)).rejects.toThrow('UNINDEXED_PREDICATE');
+        await expect(call(client)).rejects.toThrow('failed: 400');
+      },
+    );
+  });
+});

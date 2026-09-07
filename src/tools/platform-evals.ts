@@ -18,6 +18,62 @@ import { validatePathParam } from '../utils/validate.js';
 
 const querySchema = z.record(z.union([z.string(), z.number(), z.boolean()])).optional();
 const bodySchema = z.record(z.unknown()).optional();
+export const evalTargetSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('working_copy') }).strict(),
+  z
+    .object({
+      type: z.literal('environment'),
+      environment: z.enum(['dev', 'staging', 'production']),
+    })
+    .strict(),
+  z
+    .object({ type: z.literal('deployment'), deploymentId: z.string().trim().min(1).max(256) })
+    .strict(),
+  z
+    .object({
+      type: z.literal('agent_version'),
+      agentId: z.string().trim().min(1).max(256),
+      agentVersionId: z.string().trim().min(1).max(256),
+    })
+    .strict(),
+]);
+export type EvalTarget = z.infer<typeof evalTargetSchema>;
+
+// The legacy profile deliberately retains the pre-target schemas. New target
+// capabilities belong to current-v2 so old MCP clients keep their contract.
+export const legacyPlatformEvalSetsSchema = z.object({
+  action: z.enum(['list', 'get', 'create', 'update', 'delete']),
+  projectId: z.string().describe('Project ID'),
+  setId: z.string().optional().describe('Eval set ID for get/update/delete'),
+  query: querySchema.describe('Optional query params for list'),
+  body: bodySchema.describe('Request body for create/update'),
+  confirm: z.boolean().optional().describe('Set true for delete'),
+});
+
+export const legacyPlatformEvalRunsSchema = z.object({
+  action: z.enum([
+    'list',
+    'get',
+    'create',
+    'update',
+    'start',
+    'cancel',
+    'status',
+    'heatmap',
+    'cases',
+    'compare',
+    'preflight',
+    'quick',
+  ]),
+  projectId: z.string().describe('Project ID'),
+  runId: z.string().optional().describe('Run ID for get/update/start/cancel/status/heatmap/cases'),
+  runIds: z
+    .array(z.string())
+    .optional()
+    .describe('Exactly two run IDs for compare. Prefer this over query.runIds.'),
+  query: querySchema.describe('Optional query params for list/compare/heatmap'),
+  body: bodySchema.describe('Request body for create/update/start/cancel/quick'),
+});
 
 export const platformEvalPersonasSchema = z.object({
   action: z.enum(['list', 'get', 'create', 'update', 'delete', 'templates', 'generate']),
@@ -47,11 +103,14 @@ export const platformEvalEvaluatorsSchema = z.object({
 });
 
 export const platformEvalSetsSchema = z.object({
-  action: z.enum(['list', 'get', 'create', 'update', 'delete']),
+  action: z.enum(['list', 'get', 'create', 'update', 'delete', 'targets']),
   projectId: z.string().describe('Project ID'),
   setId: z.string().optional().describe('Eval set ID for get/update/delete'),
   query: querySchema.describe('Optional query params for list'),
   body: bodySchema.describe('Request body for create/update'),
+  target: evalTargetSchema
+    .optional()
+    .describe('Typed suite execution target for create/update; forwarded as body.evalTarget'),
   confirm: z.boolean().optional().describe('Set true for delete'),
 });
 
@@ -78,6 +137,9 @@ export const platformEvalRunsSchema = z.object({
     .describe('Exactly two run IDs for compare. Prefer this over query.runIds.'),
   query: querySchema.describe('Optional query params for list/compare/heatmap'),
   body: bodySchema.describe('Request body for create/update/start/cancel/quick'),
+  target: evalTargetSchema
+    .optional()
+    .describe('Typed per-run execution target for create; forwarded as body.target'),
 });
 
 type PlatformEvalPersonasArgs = z.infer<typeof platformEvalPersonasSchema>;
@@ -180,6 +242,29 @@ export async function platformEvalSets(
   ctx: DebugContext,
   dependencies?: StudioApiDependencies,
 ): Promise<string> {
+  if (args.target && args.action !== 'create' && args.action !== 'update') {
+    return jsonError(new Error('target is supported only for create and update actions.'));
+  }
+  if (args.action === 'targets') {
+    try {
+      return studioRequest(
+        ctx,
+        'GET',
+        withQuery(
+          `/api/projects/${validatePathParam(args.projectId, 'projectId')}/evals/targets`,
+          args.query,
+        ),
+        undefined,
+        undefined,
+        dependencies,
+      );
+    } catch (err) {
+      return jsonError(err);
+    }
+  }
+  if (args.target && (hasOwn(args.body, 'evalTarget') || hasOwn(args.body, 'target'))) {
+    return jsonError(new Error('Provide evalTarget through the typed target field, not both fields.'));
+  }
   return runCollectionTool(
     ctx,
     {
@@ -188,7 +273,7 @@ export async function platformEvalSets(
       action: args.action,
       id: args.setId,
       query: args.query,
-      body: args.body,
+      body: withTarget(args.body, 'evalTarget', args.target),
       confirm: args.confirm,
     },
     dependencies,
@@ -201,6 +286,12 @@ export async function platformEvalRuns(
   dependencies?: StudioApiDependencies,
 ): Promise<string> {
   try {
+    if (args.target && args.action !== 'create') {
+      throw new Error('target is supported only for the create action.');
+    }
+    if (args.target && hasOwn(args.body, 'target')) {
+      throw new Error('Provide target through the typed target field, not both fields.');
+    }
     const basePath = evalBasePath(args.projectId, 'runs');
 
     switch (args.action) {
@@ -214,7 +305,14 @@ export async function platformEvalRuns(
           dependencies,
         );
       case 'create':
-        return studioRequest(ctx, 'POST', basePath, args.body ?? {}, undefined, dependencies);
+        return studioRequest(
+          ctx,
+          'POST',
+          basePath,
+          withTarget(args.body, 'target', args.target),
+          undefined,
+          dependencies,
+        );
       case 'preflight':
         return runProjectAction(
           ctx,
@@ -311,6 +409,18 @@ export async function platformEvalRuns(
   } catch (err) {
     return jsonError(err);
   }
+}
+
+function withTarget(
+  body: Record<string, unknown> | undefined,
+  field: 'evalTarget' | 'target',
+  target: z.infer<typeof evalTargetSchema> | undefined,
+): Record<string, unknown> {
+  return target ? { ...(body ?? {}), [field]: target } : (body ?? {});
+}
+
+function hasOwn(body: Record<string, unknown> | undefined, key: string): boolean {
+  return body !== undefined && Object.prototype.hasOwnProperty.call(body, key);
 }
 
 async function runCollectionTool(

@@ -7,6 +7,7 @@
 
 import { z } from 'zod';
 import type { DebugContext } from './index.js';
+import { resolveRuntimeOwnedPath } from '../utils/url.js';
 
 // =============================================================================
 // SCHEMA
@@ -134,12 +135,18 @@ export async function diagnose(args: DiagnoseArgs, ctx: DebugContext): Promise<s
 
     if (sessionId) {
       const resp = await ctx.httpClient.get<ApiResponse>(
-        `/api/projects/${projectId}/diagnostics/sessions/${sessionId}?depth=${depth}`,
+        resolveRuntimeOwnedPath(
+          ctx.httpClient,
+          `/api/projects/${projectId}/diagnostics/sessions/${sessionId}?depth=${depth}`,
+        ),
       );
       report = resp.data;
     } else {
       const resp = await ctx.httpClient.get<ApiResponse>(
-        `/api/projects/${projectId}/diagnostics/agents/${agentName}`,
+        resolveRuntimeOwnedPath(
+          ctx.httpClient,
+          `/api/projects/${projectId}/diagnostics/agents/${agentName}`,
+        ),
       );
       report = resp.data;
     }

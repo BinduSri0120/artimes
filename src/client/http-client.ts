@@ -11,6 +11,13 @@ import { classifyFetchError } from '../utils/fetch.js';
 import { readBoundedResponseJson, ResponseSizeLimitError } from '../utils/bounded-response.js';
 import { sanitizeResponseBounded } from '../utils/sanitize.js';
 
+/**
+ * Default deadline for authenticated Runtime/Studio requests. Publish, deploy
+ * and DSL saves compile on the server, so the 5 s transport default is too
+ * short on hosted environments (observed "Request timed out" on staging).
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 async function describeErrorResponse(response: Response): Promise<string> {
   try {
     const text = await response.text();
@@ -174,11 +181,16 @@ export class HttpClient {
    */
   async get<T = unknown>(path: string): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    const response = await fetchWithTimeout(url, {
-      headers: this.getHeaders(),
-    });
+    const response = await fetchWithTimeout(
+      url,
+      {
+        headers: this.getHeaders(),
+      },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
     if (!response.ok) {
-      throw new Error(`GET ${path} failed: ${response.status} ${response.statusText}`);
+      const details = await describeErrorResponse(response);
+      throw new Error(`GET ${path} failed: ${response.status} ${response.statusText}${details}`);
     }
     return response.json() as Promise<T>;
   }
@@ -226,11 +238,15 @@ export class HttpClient {
    */
   async post<T = unknown>(path: string, body?: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    const response = await fetchWithTimeout(url, {
-      method: 'POST',
-      headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
     if (!response.ok) {
       const details = await describeErrorResponse(response);
       throw new Error(`POST ${path} failed: ${response.status} ${response.statusText}${details}`);
@@ -244,13 +260,18 @@ export class HttpClient {
    */
   async put<T = unknown>(path: string, body?: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    const response = await fetchWithTimeout(url, {
-      method: 'PUT',
-      headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'PUT',
+        headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
     if (!response.ok) {
-      throw new Error(`PUT ${path} failed: ${response.status} ${response.statusText}`);
+      const details = await describeErrorResponse(response);
+      throw new Error(`PUT ${path} failed: ${response.status} ${response.statusText}${details}`);
     }
     return response.json() as Promise<T>;
   }
@@ -262,12 +283,17 @@ export class HttpClient {
    */
   async del<T = unknown>(path: string): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    const response = await fetchWithTimeout(url, {
-      method: 'DELETE',
-      headers: this.getHeaders(),
-    });
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'DELETE',
+        headers: this.getHeaders(),
+      },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
     if (!response.ok) {
-      throw new Error(`DELETE ${path} failed: ${response.status} ${response.statusText}`);
+      const details = await describeErrorResponse(response);
+      throw new Error(`DELETE ${path} failed: ${response.status} ${response.statusText}${details}`);
     }
     const contentLength = response.headers.get('content-length');
     if (response.status === 204 || contentLength === '0') {

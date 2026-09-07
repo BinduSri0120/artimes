@@ -188,6 +188,7 @@ export async function cleanupSessionHistoryPinnedWorktree(
       cwd: repositoryRoot,
       env: {},
       timeoutMs: cleanupGraceTime(config),
+      stdio: 'ignore',
     });
   } catch (error) {
     if (!tolerateUnregistered) throw error;
@@ -468,12 +469,12 @@ function laneRequestOptions(config) {
   return { timeout: Math.min(60_000, remainingLaneTime(config)) };
 }
 
-export async function runCheckedWithinLane(command, { cwd, env, timeoutMs }) {
+export async function runCheckedWithinLane(command, { cwd, env, timeoutMs, stdio = 'inherit' }) {
   const child = spawn(command[0], command.slice(1), {
     cwd,
     env: { ...process.env, ...env },
     detached: process.platform !== 'win32',
-    stdio: 'inherit',
+    stdio,
   });
   let timedOut = false;
   const timer = setTimeout(() => {

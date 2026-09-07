@@ -12,6 +12,7 @@ import { platformMcpServers, type PlatformMcpServersArgs } from '../tools/platfo
 import { platformMcpServersSchema } from '../tools/platform-mcp-servers.js';
 import {
   platformWorkflows,
+  platformWorkflowsSchema,
   type PlatformWorkflowsArgs,
   type PlatformWorkflowsDependencies,
 } from '../tools/platform-workflows.js';
@@ -630,6 +631,132 @@ describe('platform_mcp_servers route contract', () => {
 });
 
 describe('platform_workflows route contract', () => {
+  const workflowSource =
+    'const token = tokenStep.cowin_access || tokenStep.access_token || fallback;';
+
+  it('preserves source code and the complete writable workflow graph contract', async () => {
+    const args = platformWorkflowsSchema.parse({
+      action: 'update',
+      projectId: 'project-1',
+      workflowId: 'workflow-1',
+      nodes: [
+        { id: 'start', nodeType: 'start', name: 'Start', position: { x: 0, y: 0 } },
+        {
+          id: 'function-1',
+          nodeType: 'function',
+          name: 'Select token',
+          position: { x: 100, y: 0 },
+          parentId: 'loop-1',
+          config: { code: workflowSource },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge-1',
+          source: 'start',
+          sourceHandle: 'on_success',
+          target: 'function-1',
+          targetHandle: 'loop_body_start',
+        },
+      ],
+      variableNamespaceIds: ['namespace-1'],
+      inputSchema: { type: 'object', properties: { caseId: { type: 'string' } } },
+      outputSchema: { type: 'object', properties: { selected: { type: 'string' } } },
+    });
+    const recorder = recorderFor(jsonResponse({ success: true, data: args }));
+
+    const result = JSON.parse(
+      await platformWorkflows(args, context(), recorder.workflowDependencies),
+    ) as { success: boolean; data: typeof args };
+
+    expect(result.success).toBe(true);
+    expect(result.data.nodes?.[1]).toMatchObject({
+      parentId: 'loop-1',
+      config: { code: workflowSource },
+    });
+    expect(result.data.edges?.[0]).toMatchObject({ targetHandle: 'loop_body_start' });
+    expectRequest(recorder.calls[0], {
+      method: 'PATCH',
+      path: '/api/projects/project-1/workflows/workflow-1',
+      body: {
+        nodes: args.nodes,
+        edges: args.edges,
+        variableNamespaceIds: ['namespace-1'],
+        inputSchema: args.inputSchema,
+        outputSchema: args.outputSchema,
+      },
+    });
+  });
+
+  it('returns workflow source byte-for-byte while still redacting structured credentials', async () => {
+    const recorder = recorderFor(
+      jsonResponse({
+        success: true,
+        data: {
+          nodes: [
+            {
+              id: 'function-1',
+              config: { code: workflowSource, accessToken: 'credential-value' },
+            },
+          ],
+        },
+      }),
+    );
+
+    const result = JSON.parse(
+      await platformWorkflows(
+        { action: 'get', projectId: 'project-1', workflowId: 'workflow-1' },
+        context(),
+        recorder.workflowDependencies,
+      ),
+    ) as { data: { nodes: Array<{ config: { code: string; accessToken: string } }> } };
+
+    expect(result.data.nodes[0]?.config).toEqual({
+      code: workflowSource,
+      accessToken: '[REDACTED]',
+    });
+  });
+
+  it('accepts legacy null canvas handles and omits them from transport', async () => {
+    const args = platformWorkflowsSchema.parse({
+      action: 'update',
+      projectId: 'project-1',
+      workflowId: 'workflow-1',
+      nodes: [
+        {
+          id: 'function-1',
+          nodeType: 'function',
+          name: 'Function',
+          position: { x: 0, y: 0 },
+          parentId: null,
+        },
+      ],
+      edges: [
+        {
+          id: 'edge-1',
+          source: 'start',
+          target: 'function-1',
+          targetHandle: null,
+        },
+      ],
+    });
+    const recorder = recorderFor(jsonResponse({ success: true }));
+
+    await platformWorkflows(args, context(), recorder.workflowDependencies);
+
+    expect(JSON.parse(String(recorder.calls[0]?.options.body))).toEqual({
+      nodes: [
+        {
+          id: 'function-1',
+          nodeType: 'function',
+          name: 'Function',
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [{ id: 'edge-1', source: 'start', target: 'function-1' }],
+    });
+  });
+
   it('rejects credential-bearing workflow payloads before transport', async () => {
     const recorder = recorderFor(jsonResponse({ success: true }));
     const result = JSON.parse(
@@ -827,6 +954,25 @@ describe('platform_workflows route contract', () => {
         ),
       ).success,
     ).toBe(true);
+  });
+
+  it('guides workflow-tool versioning through publish rather than obsolete create', async () => {
+    const tool = recorderFor(jsonResponse({ success: true }));
+    const result = JSON.parse(
+      await platformWorkflows(
+        {
+          action: 'create_tool',
+          projectId: 'project-1',
+          workflowId: 'workflow-1',
+          toolName: 'run_workflow',
+        },
+        context(),
+        tool.workflowDependencies,
+      ),
+    ) as { nextActions: string[] };
+
+    expect(result.nextActions.join(' ')).toContain('platform_versions(action: "publish")');
+    expect(result.nextActions.join(' ')).not.toContain('platform_versions(action: "create")');
   });
 
   it('covers every workflow upstream-error branch and optional defaults', async () => {

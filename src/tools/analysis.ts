@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import type { DebugContext } from './index.js';
 import type { TraceEventWithId, AgentState } from '../types.js';
+import { analyzeOrchestrationFailures } from './analysis-rules.js';
 
 // =============================================================================
 // SCHEMA
@@ -25,14 +26,14 @@ type AnalyzeSessionArgs = z.infer<typeof analyzeSessionSchema>;
 // TYPES
 // =============================================================================
 
-interface Issue {
+export interface Issue {
   type: 'warning' | 'error' | 'info';
   title: string;
   description: string;
   eventId?: string;
 }
 
-interface AnalysisResult {
+export interface AnalysisResult {
   summary: {
     totalEvents: number;
     eventCounts: Record<string, number>;
@@ -102,7 +103,65 @@ export async function analyzeSession(args: AnalyzeSessionArgs, ctx: DebugContext
 // ANALYSIS LOGIC
 // =============================================================================
 
-function analyzeTraces(traces: TraceEventWithId[], state?: AgentState): AnalysisResult {
+interface ChronologicalTraces {
+  ordered: TraceEventWithId[];
+  malformed: TraceEventWithId[];
+}
+
+/**
+ * The trace store intentionally returns newest-first results for debugger browsing.
+ * Analysis needs event-time order, so normalize a copy at this boundary without
+ * changing the store contract used by the other trace tools.
+ */
+function orderTracesByAuthoritativeTimestamp(traces: TraceEventWithId[]): ChronologicalTraces {
+  const valid: Array<{
+    trace: TraceEventWithId;
+    timestampMs: number;
+    eventSeq?: number;
+    inputIndex: number;
+  }> = [];
+  const malformed: TraceEventWithId[] = [];
+
+  traces.forEach((trace, inputIndex) => {
+    const timestampMs = new Date(trace.timestamp).getTime();
+    if (!Number.isFinite(timestampMs)) {
+      malformed.push(trace);
+      return;
+    }
+    const eventSeq = Number.isSafeInteger(trace.eventSeq) ? trace.eventSeq : undefined;
+    valid.push({ trace, timestampMs, eventSeq, inputIndex });
+  });
+
+  const timestampGroupHasCompleteSequence = new Map<number, boolean>();
+  for (const candidate of valid) {
+    timestampGroupHasCompleteSequence.set(
+      candidate.timestampMs,
+      (timestampGroupHasCompleteSequence.get(candidate.timestampMs) ?? true) &&
+        candidate.eventSeq !== undefined,
+    );
+  }
+
+  valid.sort((left, right) => {
+    const timestampOrder = left.timestampMs - right.timestampMs;
+    if (timestampOrder !== 0) return timestampOrder;
+    if (timestampGroupHasCompleteSequence.get(left.timestampMs)) {
+      const sequenceOrder = left.eventSeq! - right.eventSeq!;
+      if (sequenceOrder !== 0) return sequenceOrder;
+    }
+    // TraceStore browsing is newest-first, including timestamp ties. Reverse
+    // the source index only when canonical Runtime sequence is unavailable.
+    return right.inputIndex - left.inputIndex;
+  });
+
+  return {
+    ordered: valid.map(({ trace }) => trace),
+    malformed,
+  };
+}
+
+export function analyzeTraces(traces: TraceEventWithId[], state?: AgentState): AnalysisResult {
+  const { ordered: chronologicalTraces, malformed: malformedTimestampTraces } =
+    orderTracesByAuthoritativeTimestamp(traces);
   const analysis: AnalysisResult = {
     summary: {
       totalEvents: traces.length,
@@ -132,21 +191,30 @@ function analyzeTraces(traces: TraceEventWithId[], state?: AgentState): Analysis
   }
 
   // Calculate duration
-  if (traces.length >= 2) {
-    const first = new Date(traces[0].timestamp).getTime();
-    const last = new Date(traces[traces.length - 1].timestamp).getTime();
+  if (chronologicalTraces.length >= 2) {
+    const first = new Date(chronologicalTraces[0].timestamp).getTime();
+    const last = new Date(chronologicalTraces[chronologicalTraces.length - 1].timestamp).getTime();
     analysis.summary.duration = last - first;
   }
 
+  for (const malformed of malformedTimestampTraces) {
+    analysis.issues.push({
+      type: 'error',
+      title: 'Malformed trace timestamp',
+      description: `Trace event "${malformed.id}" has an invalid timestamp and was excluded from chronological analysis.`,
+      eventId: malformed.id,
+    });
+  }
+
   // Find current step from flow events
-  const flowSteps = traces.filter((t) => t.type === 'flow_step_enter');
+  const flowSteps = chronologicalTraces.filter((t) => t.type === 'flow_step_enter');
   if (flowSteps.length > 0) {
     const lastStep = flowSteps[flowSteps.length - 1];
     analysis.currentState.step = (lastStep.data as { stepName?: string })?.stepName || null;
   }
 
   // Extract collected fields from dsl_set events
-  const setEvents = traces.filter((t) => t.type === 'dsl_set');
+  const setEvents = chronologicalTraces.filter((t) => t.type === 'dsl_set');
   for (const event of setEvents) {
     const field = (event.data as { field?: string })?.field;
     if (field && !analysis.currentState.collectedFields.includes(field)) {
@@ -155,7 +223,7 @@ function analyzeTraces(traces: TraceEventWithId[], state?: AgentState): Analysis
   }
 
   // Find missing fields from collect events
-  const collectEvents = traces.filter((t) => t.type === 'dsl_collect');
+  const collectEvents = chronologicalTraces.filter((t) => t.type === 'dsl_collect');
   for (const event of collectEvents) {
     const field = (event.data as { field?: string })?.field;
     const collected = (event.data as { collected?: boolean })?.collected;
@@ -298,6 +366,10 @@ function analyzeTraces(traces: TraceEventWithId[], state?: AgentState): Analysis
         'The agent has not made any LLM calls. It may be stuck in initialization or a non-LLM flow.',
     });
   }
+
+  const orchestrationAnalysis = analyzeOrchestrationFailures(chronologicalTraces);
+  analysis.issues.push(...orchestrationAnalysis.issues);
+  analysis.suggestions.push(...orchestrationAnalysis.suggestions);
 
   return analysis;
 }

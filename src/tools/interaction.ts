@@ -38,8 +38,16 @@ export async function sendMessage(args: SendMessageArgs, ctx: DebugContext): Pro
     });
   }
 
+  const wsClient = ctx.sessionConnections?.get(sessionId) ?? ctx.wsClient;
+  if (ctx.sessionConnections && wsClient === ctx.wsClient) {
+    return JSON.stringify({
+      success: false,
+      error: `Dedicated connection unavailable for session: ${sessionId}. Load the agent again.`,
+    });
+  }
+
   // Ensure connected
-  if (!ctx.wsClient.isConnected()) {
+  if (!wsClient.isConnected()) {
     return JSON.stringify({
       success: false,
       error: 'Not connected to server. Call platform_connect first.',
@@ -51,7 +59,7 @@ export async function sendMessage(args: SendMessageArgs, ctx: DebugContext): Pro
 
   if (!waitForResponse) {
     // Fire and forget
-    ctx.wsClient.sendMessage(sessionId, text);
+    wsClient.sendMessage(sessionId, text);
     return JSON.stringify({
       success: true,
       sessionId,
@@ -82,34 +90,34 @@ export async function sendMessage(args: SendMessageArgs, ctx: DebugContext): Pro
     }, timeout);
 
     const cleanup = () => {
-      ctx.wsClient.onResponseStart = originalOnResponseStart;
-      ctx.wsClient.onResponseChunk = originalOnResponseChunk;
-      ctx.wsClient.onResponseEnd = originalOnResponseEnd;
-      ctx.wsClient.onError = originalOnError;
+      wsClient.onResponseStart = originalOnResponseStart;
+      wsClient.onResponseChunk = originalOnResponseChunk;
+      wsClient.onResponseEnd = originalOnResponseEnd;
+      wsClient.onError = originalOnError;
     };
 
     // Store original handlers
-    const originalOnResponseStart = ctx.wsClient.onResponseStart;
-    const originalOnResponseChunk = ctx.wsClient.onResponseChunk;
-    const originalOnResponseEnd = ctx.wsClient.onResponseEnd;
-    const originalOnError = ctx.wsClient.onError;
+    const originalOnResponseStart = wsClient.onResponseStart;
+    const originalOnResponseChunk = wsClient.onResponseChunk;
+    const originalOnResponseEnd = wsClient.onResponseEnd;
+    const originalOnError = wsClient.onError;
 
     // Set up temporary handlers
-    ctx.wsClient.onResponseStart = (msgSessionId, messageId) => {
+    wsClient.onResponseStart = (msgSessionId, messageId) => {
       if (msgSessionId === sessionId) {
         currentMessageId = messageId;
       }
       originalOnResponseStart?.(msgSessionId, messageId);
     };
 
-    ctx.wsClient.onResponseChunk = (msgSessionId, messageId, chunk) => {
+    wsClient.onResponseChunk = (msgSessionId, messageId, chunk) => {
       if (msgSessionId === sessionId && messageId === currentMessageId) {
         chunks.push(chunk);
       }
       originalOnResponseChunk?.(msgSessionId, messageId, chunk);
     };
 
-    ctx.wsClient.onResponseEnd = (msgSessionId, messageId, fullText) => {
+    wsClient.onResponseEnd = (msgSessionId, messageId, fullText) => {
       if (msgSessionId === sessionId && messageId === currentMessageId) {
         responseText = fullText;
         clearTimeout(timeoutId);
@@ -131,7 +139,7 @@ export async function sendMessage(args: SendMessageArgs, ctx: DebugContext): Pro
       originalOnResponseEnd?.(msgSessionId, messageId, fullText);
     };
 
-    ctx.wsClient.onError = (message) => {
+    wsClient.onError = (message) => {
       clearTimeout(timeoutId);
       if (!resolved) {
         resolved = true;
@@ -147,6 +155,6 @@ export async function sendMessage(args: SendMessageArgs, ctx: DebugContext): Pro
     };
 
     // Send the message
-    ctx.wsClient.sendMessage(sessionId, text);
+    wsClient.sendMessage(sessionId, text);
   });
 }

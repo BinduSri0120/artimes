@@ -24,6 +24,33 @@
 - Credential-store tests should use temp `XDG_CONFIG_HOME`/`HOME` directories and real files instead of mocking `node:fs`; the credential path helpers resolve environment variables at call time.
 - WebSocket client tests can use an in-process `WebSocketServer` on `127.0.0.1:0` to validate subprotocols, sends, and dispatch without mocking the `ws` package.
 
+## 2026-09-02 — Analyzer Fixes Need Clean-Installed Artifact Proof
+
+**Category**: release | observability | compatibility
+**Learning**: Source-level chronology tests do not prove the version launched by `npx` or an MCP
+client. ABLP-4519 reproduced the old negative-duration calculation in published 1.5.0 while the
+reviewed 1.5.1 source was already correct. Chronology-sensitive release regressions must execute the
+handler from the suite's clean-installed tarball and bind the observation to the MCP-advertised
+package version.
+**Files**: `src/__tests__/guidance-package.e2e.test.ts`, `src/tools/analysis.ts`,
+`src/tools/persona.ts`
+**Impact**: Preserve newest-first trace browsing and the ABLP-4441 timestamp normalization. Add
+artifact-level assertions to the existing suite-scoped pack/install fixture rather than creating a
+parallel build or changing duration arithmetic to hide a stale release.
+
+## 2026-09-02 — Offline MCP Docs Need Scenario Retrieval, Not Exact Phrases
+
+**Category**: docs | fallback | search | runtime
+**Learning**: The standalone MCP package cannot assume connected Studio docs are
+available. High-impact ABL lifecycle contracts need a compact embedded fallback,
+and fallback search must rank multi-token natural questions instead of requiring
+one exact substring. Preserve Studio as the authoritative full reference while
+testing connected, disconnected, exact-term, and natural-language retrieval.
+**Files**: `src/docs/index.ts`, `src/__tests__/docs.test.ts`
+**Impact**: New embedded topics should remain source-backed and narrow, include
+the connected Studio topic identifier, and prove at least 85% four-metric
+coverage for changed fallback-search logic.
+
 ## 2026-07-20 — Generic MCP Discovery Mirrors A Domain Registry
 
 **Category**: project-builder | MCP | resources | prompts | compatibility
@@ -388,8 +415,10 @@ entry and OAuth consent through the secure Studio flow, then use opaque profile 
 
 1. `platform_connect`
 2. `platform_eval_personas` / `platform_eval_scenarios` / `platform_eval_evaluators` (assets)
-3. `platform_eval_sets` (group them)
-4. `platform_eval_runs` (`start`, then poll `status`, read `heatmap` / cases)
+3. `platform_eval_sets(action="targets")` to discover executable and disabled targets, then
+   `platform_eval_sets` to create/update the suite with the selected typed `target`
+4. `platform_eval_runs(action="create", target=...)` for an optional run-only override, then
+   `start`, poll `status`, and read `get` / `heatmap` / cases for locked-target evidence
 
 **Repair a project to a behavior target (SOP → ABL convergence)**
 
@@ -489,3 +518,96 @@ tarball.
 clean-installed process tests as production before npm publication is allowed. Cleanup must fail
 visibly and retain its recovery directory if any temporarily rewritten source file cannot be
 restored.
+
+## 2026-08-13 — Device Denial Is Terminal for MCP Polling
+
+**Category**: auth | device-flow | compatibility
+**Learning**: Runtime emits RFC 8628 `access_denied` after a persisted browser denial. The MCP auth client must stop polling immediately and return an actionable `platform_connect` restart message; treating denial like a transient error can hide the user's decision or waste the grant timeout.
+**Files**: `src/client/auth-client.ts`, `src/__tests__/auth-client.test.ts`
+**Impact**: Add an explicit terminal consumer branch and regression whenever Runtime introduces a device-token error code. Retry only documented transient outcomes.
+
+## 2026-08-21 — Workflow Source Is Opaque At Its Structured Protocol Path
+
+**Category**: workflow | fidelity | credentials | compatibility
+**Learning**: Preserve parseable, credential-free workflow function source byte-for-byte only at
+the deterministic `nodes[*].config.code` path. Use syntax-tree inspection instead of
+natural-language scanning: valid identifiers and ordinary prose remain untouched, while detected,
+high-confidence credential literals in sensitive assignments/properties/functions, common header
+setters, static concatenations, and comments are rejected on input and redacted on output. This is
+defense-in-depth for static literals, not runtime secret inference. Malformed source fails closed.
+Structured credential keys remain protected. Keep the
+writable workflow canvas contract aligned across MCP, Runtime, and Mongo, including `parentId`,
+`targetHandle`, variable namespaces, and nullable input/output schemas.
+**Files**: `src/utils/sanitize.ts`, `src/utils/workflow-source.ts`,
+`src/tools/platform-workflows.ts`, `src/project-building/domains/workflow.ts`
+**Impact**: Workflow contract additions require additive schema and round-trip coverage at every
+serialization boundary. Older Runtime deployments may ignore newly forwarded optional fields, so
+release validation must distinguish MCP-package fidelity from platform-deployment fidelity.
+
+## 2026-09-01 — Loaded Debug Session IDs Own Their WebSocket Transport
+
+**Category**: debugging | lifecycle | isolation | resource safety
+**Learning**: Runtime intentionally binds one loaded Web Debug session to one WebSocket and
+terminalizes the prior binding when that socket loads again. An MCP session store may retain
+multiple returned IDs only if each MCP-created load has a dedicated authenticated WebSocket and all
+session-bound tools resolve that transport by ID. Keep the shared control socket for connection and
+subscription operations. Clear every dedicated socket after committed token/environment/workspace
+changes and on shutdown; bound retained connections with atomic-on-success LRU eviction and an
+inactivity TTL. Never fall back to the control socket for a missing owned-session transport.
+**Files**: `src/client/session-connection-registry.ts`, `src/tools/agents.ts`,
+`src/tools/interaction.ts`, `src/tools/state.ts`, `src/tools/connect.ts`,
+`src/tools/platform-workspaces.ts`, `src/server.ts`
+**Impact**: New loaded-session tools must use the ownership registry, while Runtime reload
+terminalization and stale-output fencing remain unchanged.
+
+## 2026-09-01 — Debug Analysis Normalizes Event Time Without Changing Browse Order
+
+**Category**: debugging | observability | ordering | testing
+**Learning**: `TraceStore.getBySession()` intentionally returns newest-first results for debugger
+browsing. Any chronology-dependent analyzer must stable-sort a copy by the event's authoritative
+timestamp at its own boundary. Canonical `eventSeq` orders equal-millisecond events; top-level
+turn/execution IDs take precedence over data aliases and the bounded timestamp fallback. Invalid
+timestamps stay visible in counts and diagnostics but cannot drive duration or current-step
+conclusions. Never hide ordering defects with absolute-value or zero
+clamps, and test the exported production analyzer with the real store instead of copying its logic.
+**Files**: `src/tools/analysis.ts`, `src/__tests__/analysis.test.ts`
+**Impact**: Future chronological analyzer rules must consume the normalized projection; traces,
+spans, decisions, and flow browsing retain their established newest-first behavior.
+
+## 2026-09-02 — Rollout Analysis Requires Causal Closure, Not Event Counts Alone
+
+**Category**: debugging | observability | orchestration | compatibility
+**Learning**: Session-analysis rules for final output, queued work, and specialist routing must pair
+an authoritative start event with its required downstream evidence inside the same canonical turn.
+Do not call an open turn failed, treat an intent label as a dispatch target, accept a mismatched route
+decision, or classify explicit authority denial as bypass. Handoff cycles reset at customer-turn
+boundaries. Reaching the 500-event session buffer is itself an incomplete-evidence error because
+earlier events may have been evicted.
+**Files**: `src/tools/analysis-rules.ts`, `src/tools/analysis.ts`, `src/types.ts`,
+`src/__tests__/analysis-rules.test.ts`, `src/__tests__/analysis.test.ts`
+**Impact**: New Runtime orchestration event types or correlation aliases must update MCP's inlined
+trace contract and causal rules together; existing Runtime execution and newest-first browsing remain
+unchanged.
+
+## 2026-09-03 — Runtime-Owned Project Routes Need The Studio Passthrough On Hosted Envs
+
+**Category**: routing | compatibility | hosted-environments
+**Learning**: On nginx-mode deployments (dev/staging/prod) every `/api/*` request reaches Studio
+first. Studio only forwards a Runtime-owned project route when it is addressed as
+`/api/runtime/projects/...` (proxy passthrough) or matches a proxy allow-list regex. Plain
+`/api/projects/:id/sessions`, `/sessions/:id/traces`, `/sdk-public-keys` and `/diagnostics/*`
+therefore hit a Studio App Router handler with a different envelope (`{sessions}` → tool reports
+`MALFORMED_RESPONSE`) or a Next.js HTML 404. Locally (AGENTS_URL on the Runtime port) the plain
+path works, which is why this shipped. Wrap Runtime-owned project paths with
+`resolveRuntimeOwnedPath(ctx.httpClient, path)` (`src/utils/url.ts`); it rewrites only for remote
+origins and only for `/api/projects/...`. Studio-owned routes (tools, agents, workflows, evals,
+config, auth profiles) must keep the plain path.
+**Files**: `src/utils/url.ts`, `src/tools/session-history.ts`, `src/tools/platform-sdk-channels.ts`,
+`src/tools/diagnose.ts`
+**Impact**: Before adding a new Runtime-only project route to a tool, check
+`apps/studio/src/proxy.ts` (`RUNTIME_PROJECT_SUBPATH_RE`, `RUNTIME_PASSTHROUGH_PREFIXES`) and
+prefer the passthrough over a new proxy regex. `HttpClient.get/put/del` now include the upstream
+error body and use `DEFAULT_REQUEST_TIMEOUT_MS` (30 s); the 5 s transport default is for health
+probes only. The candidate WebSocket accepts frames up to `MAX_INBOUND_FRAME_BYTES` (1 MiB) so a
+buffered replay on token refresh no longer drops the control socket, and a same-identity token
+refresh preserves the debug context (`contextReset:false`).

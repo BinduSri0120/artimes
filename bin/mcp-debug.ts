@@ -9,11 +9,12 @@
  *   --studio-url <url>   Studio URL when it is not co-hosted with Runtime
  *   --ws-url <url>       (Deprecated) WebSocket URL
  *   --http-url <url>     (Deprecated) HTTP API URL
+ *   --discovery-profile <profile>  MCP contract: current-v2 (default) or legacy-v1
  *   --help               Show help
  */
 
 import { MCPDebugServer } from '../src/server.js';
-import { tools } from '../src/tools/index.js';
+import { getTools, type ToolDiscoveryProfile } from '../src/tools/index.js';
 import {
   ARCH_CAPABILITY_ORDER,
   ARCH_MCP_DESCRIPTION,
@@ -27,6 +28,7 @@ function parseArgs(args: string[]): {
   studioUrl?: string;
   wsUrl?: string;
   httpUrl?: string;
+  discoveryProfile?: ToolDiscoveryProfile;
   help?: boolean;
 } {
   const result: {
@@ -34,6 +36,7 @@ function parseArgs(args: string[]): {
     studioUrl?: string;
     wsUrl?: string;
     httpUrl?: string;
+    discoveryProfile?: ToolDiscoveryProfile;
     help?: boolean;
   } = {};
 
@@ -50,16 +53,23 @@ function parseArgs(args: string[]): {
       result.wsUrl = args[++i];
     } else if (arg === '--http-url' && args[i + 1]) {
       result.httpUrl = args[++i];
+    } else if (arg === '--discovery-profile' && args[i + 1]) {
+      const profile = args[++i];
+      if (profile !== 'legacy-v1' && profile !== 'current-v2') {
+        throw new Error(`Unsupported discovery profile: ${profile}`);
+      }
+      result.discoveryProfile = profile;
     }
   }
 
   return result;
 }
 
-function showHelp(): void {
-  const toolNameWidth = Math.max(...tools.map((tool) => tool.name.length));
+function showHelp(discoveryProfile: ToolDiscoveryProfile = 'current-v2'): void {
+  const exposedTools = getTools(discoveryProfile);
+  const toolNameWidth = Math.max(...exposedTools.map((tool) => tool.name.length));
   const groupedTools = ARCH_CAPABILITY_ORDER.map((capability) => {
-    const capabilityTools = tools.filter(
+    const capabilityTools = exposedTools.filter(
       (tool) => getArchCapabilityForTool(tool.name) === capability,
     );
     const lines = capabilityTools.map(
@@ -78,6 +88,7 @@ Usage: arch-mcp-tools [options]
 Options:
   --server-url <url>   Runtime server URL (or set AGENTS_URL env var)
   --studio-url <url>   Explicit Studio origin for split-port deployments
+  --discovery-profile <profile>  current-v2 (default) or legacy-v1
   --help, -h           Show this help message
 
 Environment Variables:
@@ -88,7 +99,9 @@ Environment Variables:
                                  https://agents-staging.kore.ai (staging)
                                  https://agents-qa.kore.ai       (qa)
 
-Available MCP Tools (${tools.length}):
+Discovery profile: ${discoveryProfile}
+
+Available MCP Tools (${exposedTools.length}):
 
 ${groupedTools}
 
@@ -109,7 +122,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) {
-    showHelp();
+    showHelp(args.discoveryProfile);
     process.exit(0);
   }
 
@@ -118,6 +131,7 @@ async function main(): Promise<void> {
     studioUrl: args.studioUrl,
     wsUrl: args.wsUrl,
     httpUrl: args.httpUrl,
+    discoveryProfile: args.discoveryProfile,
   });
 
   // Handle shutdown

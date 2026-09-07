@@ -61,6 +61,13 @@ function connectSuccess(data: Record<string, unknown>): string {
   return JSON.stringify({ success: true, ...data });
 }
 
+/** Drop buffered sessions, traces and per-session sockets — only when identity or target changed. */
+function resetDebugContext(ctx: DebugContext): void {
+  ctx.sessionConnections?.clear();
+  ctx.sessionStore.clear();
+  ctx.traceStore.clear();
+}
+
 function connectError(error: string, extra?: Record<string, unknown>): string {
   return JSON.stringify({ success: false, error, hint: DO_NOT_RETRY_HINT, ...extra });
 }
@@ -116,16 +123,27 @@ async function connectUnlocked(args: ConnectArgs, ctx: DebugContext): Promise<st
     try {
       await ctx.wsClient.reconnect({ authToken });
       ctx.httpClient.setAuthToken(authToken);
-      ctx.sessionStore.clear();
-      ctx.traceStore.clear();
+      const refreshedIdentityTarget = describeContextTarget(ctx);
+      // A credential refresh for the same workspace/user keeps the debug
+      // context: buffered traces and loaded sessions stay valid. Only an
+      // identity change (other tenant or subject) invalidates them.
+      const contextReset = !sameContextIdentity(
+        activeIdentityTarget,
+        refreshedIdentityTarget,
+        activeAuthToken,
+        authToken,
+      );
+      if (contextReset) resetDebugContext(ctx);
       return connectSuccess({
         status: 'token_refreshed',
         serverUrl: activeConnectionTarget.serverUrl,
         wsUrl: activeConnectionTarget.wsUrl,
-        activeTarget: describeContextTarget(ctx),
+        activeTarget: refreshedIdentityTarget,
         contextVersion: advanceContextVersion(ctx),
-        contextReset: true,
-        message: 'Auth token and authenticated WebSocket connection were replaced.',
+        contextReset,
+        message: contextReset
+          ? 'Auth token and authenticated WebSocket connection were replaced; debug context was reset for the new identity.'
+          : 'Auth token and authenticated WebSocket connection were replaced; buffered debug context was preserved.',
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -262,11 +280,10 @@ async function connectUnlocked(args: ConnectArgs, ctx: DebugContext): Promise<st
         activeAuthToken,
         authResult.token,
       );
-      const contextReset = wasConnected || targetChanged || Boolean(force) || identityChanged;
-      if (contextReset) {
-        ctx.sessionStore.clear();
-        ctx.traceStore.clear();
-      }
+      // `wasConnected` alone can only reach this branch with force=true, so the
+      // reset is driven by an explicit force, a target change, or an identity change.
+      const contextReset = Boolean(force) || targetChanged || identityChanged;
+      if (contextReset) resetDebugContext(ctx);
 
       const connectedTarget = describeContextTarget(ctx);
 

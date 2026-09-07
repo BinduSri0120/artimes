@@ -49,3 +49,36 @@ export function isRemoteUrl(url: string): boolean {
     return false;
   }
 }
+
+/** Studio-fronted origins expose Runtime-owned project routes under this passthrough prefix. */
+const STUDIO_RUNTIME_PASSTHROUGH_PREFIX = '/api/runtime/projects/';
+const RUNTIME_PROJECT_API_PREFIX = '/api/projects/';
+
+/**
+ * Rewrite a Runtime-owned `/api/projects/...` path for the connected origin.
+ *
+ * On hosted environments every `/api/*` request reaches Studio first, and Studio
+ * only forwards a Runtime-owned project route when it is addressed through the
+ * `/api/runtime/projects/...` passthrough; otherwise the request hits a Studio
+ * App Router handler with a different envelope or a Next.js 404 page. Direct
+ * Runtime targets (localhost) keep the plain path because Runtime has no
+ * `/api/runtime` tree of its own.
+ */
+export function toRuntimeOwnedApiPath(baseUrl: string, path: string): string {
+  if (!isRemoteUrl(baseUrl)) return path;
+  if (!path.startsWith(RUNTIME_PROJECT_API_PREFIX)) return path;
+  return STUDIO_RUNTIME_PASSTHROUGH_PREFIX + path.slice(RUNTIME_PROJECT_API_PREFIX.length);
+}
+
+/**
+ * Resolve a Runtime-owned project path against the connected HTTP client.
+ * Tolerates minimal client stubs (tests/injected transports) that expose no
+ * base URL: those keep the plain path.
+ */
+export function resolveRuntimeOwnedPath(
+  httpClient: { getBaseUrl?: () => string } | undefined,
+  path: string,
+): string {
+  const baseUrl = typeof httpClient?.getBaseUrl === 'function' ? httpClient.getBaseUrl() : '';
+  return baseUrl ? toRuntimeOwnedApiPath(baseUrl, path) : path;
+}

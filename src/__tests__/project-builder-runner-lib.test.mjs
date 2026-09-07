@@ -11,6 +11,7 @@ import {
   loginActors,
   materialize,
   partitionTransitionProcesses,
+  PROCESS_STOP_TIMEOUT_MS,
   requestJson,
   runBootstrapCommands,
   startOwnedServices,
@@ -182,17 +183,17 @@ describe('project-builder release runner', () => {
     });
     const descendantPid = Number.parseInt(await readFile(pidFile, 'utf8'), 10);
     await stopOwnedProcesses(owned);
+    // Production kills the owned process group with SIGKILL, but OS delivery and
+    // reaping can lag on a saturated CI runner. Poll for the whole production stop
+    // envelope (PROCESS_STOP_TIMEOUT_MS) so the assertion measures whether the
+    // descendant is ever killed, not how fast a loaded box reaps it.
     let descendantAlive = true;
-    for (let attempt = 0; attempt < 20 && descendantAlive; attempt += 1) {
-      try {
-        process.kill(descendantPid, 0);
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-      } catch {
-        descendantAlive = false;
-      }
+    for (let attempt = 0; attempt < 200 && descendantAlive; attempt += 1) {
+      descendantAlive = await isLiveProcess(descendantPid);
+      if (descendantAlive) await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
     }
     expect(descendantAlive).toBe(false);
-  });
+  }, PROCESS_STOP_TIMEOUT_MS + 5_000);
 
   it('executes API-only upgrade steps with actor auth and captured opaque IDs', async () => {
     const received = [];
@@ -322,6 +323,26 @@ describe('project-builder release runner', () => {
     ]);
   });
 });
+
+async function isLiveProcess(pid) {
+  if (process.platform === 'linux') {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+      const commandEnd = stat.lastIndexOf(')');
+      // Linux keeps a SIGKILLed process visible as a zombie until its parent
+      // or init reaps it. That is not a live descendant leak.
+      return stat.slice(commandEnd + 2, commandEnd + 3) !== 'Z';
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function service(name) {
   return { name, command: ['node', '--version'], readyUrl: 'http://127.0.0.1:3000' };

@@ -61,8 +61,11 @@ type DSLTraceEventType =
 
 type EngineTraceEventType =
   | 'completion_check'
+  | 'response_candidate'
+  | 'semantic_execution_dispatch'
   | 'engine_decision'
   | 'handoff_condition_check'
+  | 'handoff_authority_denied'
   | 'thread_return'
   | 'data_stored'
   | 'digression'
@@ -244,6 +247,12 @@ export interface TraceEvent {
   agentName?: string;
   spanId?: string;
   parentSpanId?: string;
+  /** Canonical Runtime turn correlation used by chronology and analyzer rules. */
+  turnId?: string;
+  /** Canonical Runtime execution correlation used when a turn ID is unavailable. */
+  executionId?: string;
+  /** Canonical per-emitter event sequence. */
+  eventSeq?: number;
 }
 
 export interface TraceEventWithId extends TraceEvent {

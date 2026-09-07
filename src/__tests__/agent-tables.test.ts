@@ -216,3 +216,34 @@ function jsonResponse(
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+describe('agent_tables upstream error passthrough', () => {
+  test('keeps the Runtime error body when a query is rejected', async () => {
+    const fetchRecorder = createFetchRecorder(
+      jsonResponse(
+        {
+          success: false,
+          error: { code: 'UNINDEXED_PREDICATE', message: 'Column "customer" is not indexed' },
+        },
+        { status: 400, statusText: 'Bad Request' },
+      ),
+    );
+
+    const raw = await agentTables(
+      {
+        action: 'query',
+        projectId: 'project-1',
+        table: 'orders',
+        query: { predicate: { kind: 'leaf', column: 'customer', op: 'eq', value: 'Ada' } },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+    const output = JSON.parse(raw) as { success: boolean; error: string };
+
+    expect(output.success).toBe(false);
+    expect(output.error).toContain('400 Bad Request');
+    expect(output.error).toContain('UNINDEXED_PREDICATE');
+    expect(output.error).toContain('is not indexed');
+  });
+});

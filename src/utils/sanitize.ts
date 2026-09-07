@@ -15,50 +15,79 @@ function containsSensitiveText(value: string): boolean {
   );
 }
 
-export function findSensitiveFieldPath(value: unknown, prefix = ''): string | null {
+export interface SanitizerPolicy {
+  preserveStringAtPath?: (path: string) => boolean;
+  containsSensitiveStringAtPath?: (value: string, path: string) => boolean;
+  sanitizeStringAtPath?: (value: string, path: string) => string;
+}
+
+export function findSensitiveFieldPath(
+  value: unknown,
+  prefix = '',
+  policy: SanitizerPolicy = {},
+): string | null {
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
-      const found = findSensitiveFieldPath(value[index], `${prefix}[${index}]`);
+      const found = findSensitiveFieldPath(value[index], `${prefix}[${index}]`, policy);
       if (found) return found;
     }
     return null;
   }
-  if (typeof value === 'string') return containsSensitiveText(value) ? prefix || '$' : null;
+  if (typeof value === 'string') {
+    if (policy.preserveStringAtPath?.(prefix)) {
+      return policy.containsSensitiveStringAtPath?.(value, prefix) ? prefix || '$' : null;
+    }
+    return containsSensitiveText(value) ? prefix || '$' : null;
+  }
   if (typeof value !== 'object' || value === null) return null;
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     const path = prefix ? `${prefix}.${key}` : key;
     if (isSensitiveKey(key)) return path;
-    const found = findSensitiveFieldPath(child, path);
+    const found = findSensitiveFieldPath(child, path, policy);
     if (found) return found;
   }
   return null;
 }
 
-export function sanitizeResponse(data: unknown): unknown {
+export function sanitizeResponse(data: unknown, policy: SanitizerPolicy = {}, path = ''): unknown {
   if (data === null || data === undefined) return data;
-  if (typeof data === 'string') return redactSensitiveText(data);
+  if (typeof data === 'string') {
+    if (policy.preserveStringAtPath?.(path)) {
+      return policy.sanitizeStringAtPath?.(data, path) ?? data;
+    }
+    return redactSensitiveText(data);
+  }
   if (typeof data !== 'object') return data;
-  if (Array.isArray(data)) return data.map(sanitizeResponse);
+  if (Array.isArray(data)) {
+    return data.map((value, index) => sanitizeResponse(value, policy, `${path}[${index}]`));
+  }
 
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
     if (isSensitiveKey(key)) {
       result[key] = '[REDACTED]';
     } else {
-      result[key] = sanitizeResponse(value);
+      result[key] = sanitizeResponse(value, policy, path ? `${path}.${key}` : key);
     }
   }
   return result;
 }
 
-export interface BoundedSanitizerOptions {
+export interface BoundedSanitizerOptions extends SanitizerPolicy {
   maxDepth?: number;
   maxArrayItems?: number;
   maxObjectKeys?: number;
   maxStringLength?: number;
 }
 
-const BOUNDED_DEFAULTS: Required<BoundedSanitizerOptions> = {
+type SanitizerLimits = Required<
+  Omit<
+    BoundedSanitizerOptions,
+    'preserveStringAtPath' | 'containsSensitiveStringAtPath' | 'sanitizeStringAtPath'
+  >
+>;
+
+const BOUNDED_DEFAULTS: SanitizerLimits = {
   maxDepth: 12,
   maxArrayItems: 100,
   maxObjectKeys: 100,
@@ -69,12 +98,17 @@ export function findSensitiveFieldPathBounded(
   value: unknown,
   options: BoundedSanitizerOptions = {},
 ): string | null {
-  const limits = { ...BOUNDED_DEFAULTS, ...options };
+  const limits: SanitizerLimits = { ...BOUNDED_DEFAULTS, ...options };
   const ancestors = new Set<object>();
 
   function visit(current: unknown, path: string, depth: number): string | null {
     assertTraversalBound(current, depth, limits);
-    if (typeof current === 'string') return containsSensitiveText(current) ? path || '$' : null;
+    if (typeof current === 'string') {
+      if (options.preserveStringAtPath?.(path)) {
+        return options.containsSensitiveStringAtPath?.(current, path) ? path || '$' : null;
+      }
+      return containsSensitiveText(current) ? path || '$' : null;
+    }
     if (current === null || typeof current !== 'object') return null;
     if (ancestors.has(current)) return null;
     ancestors.add(current);
@@ -95,18 +129,24 @@ export function sanitizeResponseBounded(
   value: unknown,
   options: BoundedSanitizerOptions = {},
 ): unknown {
-  const limits = { ...BOUNDED_DEFAULTS, ...options };
+  const limits: SanitizerLimits = { ...BOUNDED_DEFAULTS, ...options };
   const ancestors = new Set<object>();
 
-  function visit(current: unknown, depth: number): unknown {
+  function visit(current: unknown, path: string, depth: number): unknown {
     assertTraversalBound(current, depth, limits);
-    if (typeof current === 'string') return redactSensitiveText(current);
+    if (typeof current === 'string') {
+      if (options.preserveStringAtPath?.(path)) {
+        return options.sanitizeStringAtPath?.(current, path) ?? current;
+      }
+      return redactSensitiveText(current);
+    }
     if (current === null || typeof current !== 'object') return current;
     if (ancestors.has(current)) return '[CIRCULAR]';
     ancestors.add(current);
     const result: Record<string, unknown> | unknown[] = Array.isArray(current) ? [] : {};
     for (const [key, child] of safeEntries(current, limits.maxObjectKeys)) {
-      const sanitized = isSensitiveKey(key) ? '[REDACTED]' : visit(child, depth + 1);
+      const childPath = Array.isArray(current) ? `${path}[${key}]` : path ? `${path}.${key}` : key;
+      const sanitized = isSensitiveKey(key) ? '[REDACTED]' : visit(child, childPath, depth + 1);
       if (Array.isArray(result)) result.push(sanitized);
       else result[key] = sanitized;
     }
@@ -114,14 +154,10 @@ export function sanitizeResponseBounded(
     return result;
   }
 
-  return visit(value, 0);
+  return visit(value, '', 0);
 }
 
-function assertTraversalBound(
-  value: unknown,
-  depth: number,
-  limits: Required<BoundedSanitizerOptions>,
-): void {
+function assertTraversalBound(value: unknown, depth: number, limits: SanitizerLimits): void {
   if (depth > limits.maxDepth) throw new Error('Sanitizer maximum depth exceeded');
   if (typeof value === 'string' && value.length > limits.maxStringLength) {
     throw new Error('Sanitizer maximum string length exceeded');

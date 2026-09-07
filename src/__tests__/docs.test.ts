@@ -30,6 +30,10 @@ const disconnectedCtx = {
 
 describe('Embedded documentation fallback', () => {
   test('ABL_DOCS includes focused MCP fallback topics', () => {
+    expect(ABL_DOCS['abl/flow-lifecycle']).toContain('MAX_ATTEMPTS');
+    expect(ABL_DOCS['abl/flow-lifecycle']).toContain('MAX_TURNS');
+    expect(ABL_DOCS['abl/flow-lifecycle']).toContain('promptless ON_INPUT');
+    expect(ABL_DOCS['abl/flow-lifecycle']).toContain('max_flow_iterations');
     expect(ABL_DOCS['mcp/import-contract']).toContain('Import Preview and Apply Contract');
     expect(ABL_DOCS['mcp/behavior-profiles']).toContain('Behavior Profile Package Contract');
     expect(ABL_DOCS['mcp/abl-repair-loop']).toContain('compiledRuntimeConstraints');
@@ -40,6 +44,10 @@ describe('Embedded documentation fallback', () => {
   test('DOC_TOPICS exposes topic metadata', () => {
     expect(DOC_TOPICS).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          id: 'abl/flow-lifecycle',
+          title: 'FLOW Retry and Lifecycle Contract',
+        }),
         expect.objectContaining({
           id: 'mcp/platform-contract',
           title: 'MCP Platform Contract',
@@ -61,6 +69,50 @@ describe('Embedded documentation fallback', () => {
         }),
       ]),
     );
+  });
+
+  test('searchDocumentation rejects empty, stop-word-only, and unrelated queries', () => {
+    expect(searchDocumentation('   ')).toEqual([]);
+    expect(searchDocumentation('how do I')).toEqual([]);
+    expect(searchDocumentation('quuxyz-unrelated-topic')).toEqual([]);
+  });
+
+  test('searchDocumentation supports title and exact-content matches with bounded excerpts', () => {
+    const titleResult = searchDocumentation('FLOW Retry and Lifecycle Contract')[0];
+    const exactContentResult = searchDocumentation('session serialization')[0];
+
+    expect(titleResult).toMatchObject({ id: 'abl/flow-lifecycle' });
+    expect(titleResult?.excerpt).toContain('FLOW Retry and Lifecycle Contract');
+    expect(exactContentResult).toMatchObject({ id: 'abl/flow-lifecycle' });
+    expect(exactContentResult?.excerpt.replace(/\s+/gu, ' ')).toContain('session serialization');
+  });
+
+  test('searchDocumentation can return topic metadata when fallback content is unavailable', () => {
+    const topicId = 'mcp/agent-tables';
+    const originalContent = ABL_DOCS[topicId];
+    delete ABL_DOCS[topicId];
+
+    try {
+      expect(searchDocumentation('Agent Tables MCP Guide')[0]).toMatchObject({
+        id: topicId,
+        excerpt: '',
+      });
+    } finally {
+      if (originalContent !== undefined) {
+        ABL_DOCS[topicId] = originalContent;
+      }
+    }
+  });
+
+  test.each([
+    'MAX_ATTEMPTS and ON_EXHAUSTED',
+    'difference between MAX_TURNS and MAX_ATTEMPTS',
+    'stop reasoning after unsuccessful customer messages',
+    'promptless ON_INPUT unmatched input',
+    'same step transition SET runs again',
+    'max_flow_iterations restored session',
+  ])('finds FLOW lifecycle guidance for an agent-developer scenario: %s', (query) => {
+    expect(searchDocumentation(query)[0]).toMatchObject({ id: 'abl/flow-lifecycle' });
   });
 });
 
@@ -92,6 +144,18 @@ describe('debug_docs fallback behavior', () => {
     expect(result.source).toBe('embedded');
     expect(result.resultCount).toBeGreaterThan(0);
     expect(result.detail).toContain('Not authenticated');
+  });
+
+  test('returns lifecycle guidance when Studio is unavailable', async () => {
+    const result = JSON.parse(
+      await docs({ query: 'stop reasoning after unsuccessful customer messages' }, disconnectedCtx),
+    ) as {
+      source: string;
+      results: Array<{ id: string }>;
+    };
+
+    expect(result.source).toBe('embedded');
+    expect(result.results[0]?.id).toBe('abl/flow-lifecycle');
   });
 
   test('lists Studio topics from the local Studio origin', async () => {

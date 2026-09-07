@@ -23,7 +23,16 @@ export type MessageHandler = (message: ServerMessage) => void;
 /** Default connection timeout (10 seconds) */
 const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
 const MAX_CANDIDATE_BUFFERED_MESSAGES = 100;
-const MAX_CANDIDATE_BUFFERED_BYTES = 256 * 1024;
+/**
+ * Largest single inbound frame accepted from Runtime. Runtime caps its own
+ * inbound frames at 512 KB (apps/runtime/src/server.ts WS_MAX_PAYLOAD_DEFAULT)
+ * and a buffered trace replay on subscribe can approach that size, so the
+ * client ceiling must stay above it or `ws` closes the socket with
+ * "Max payload size exceeded" (1009) mid-replacement.
+ */
+export const MAX_INBOUND_FRAME_BYTES = 1024 * 1024;
+/** Cumulative bytes a not-yet-promoted candidate socket may buffer. */
+const MAX_CANDIDATE_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 export interface ConnectionOptions {
   url?: string;
@@ -167,7 +176,9 @@ export class WebSocketClient {
           return;
         }
 
-        const socket = new WebSocket(this.url, buildWebDebugWSProtocols(this.authToken));
+        const socket = new WebSocket(this.url, buildWebDebugWSProtocols(this.authToken), {
+          maxPayload: MAX_INBOUND_FRAME_BYTES,
+        });
         this.ws = socket;
 
         // Connection timeout — rejects + closes socket if open/error never fires
@@ -371,7 +382,7 @@ export class WebSocketClient {
   private openCandidateSocket(url: string, authToken: string): Promise<CandidateSocket> {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url, buildWebDebugWSProtocols(authToken), {
-        maxPayload: MAX_CANDIDATE_BUFFERED_BYTES,
+        maxPayload: MAX_INBOUND_FRAME_BYTES,
       });
       const bufferedMessages: string[] = [];
       let bufferedBytes = 0;
@@ -386,7 +397,7 @@ export class WebSocketClient {
       const bufferMessage = (data: WebSocket.RawData) => {
         const messageBytes = rawDataByteLength(data);
         if (
-          messageBytes > MAX_CANDIDATE_BUFFERED_BYTES ||
+          messageBytes > MAX_INBOUND_FRAME_BYTES ||
           bufferedMessages.length >= MAX_CANDIDATE_BUFFERED_MESSAGES ||
           bufferedBytes + messageBytes > MAX_CANDIDATE_BUFFERED_BYTES
         ) {

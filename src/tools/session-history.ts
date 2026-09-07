@@ -13,6 +13,7 @@ import { FetchError } from '../utils/fetch.js';
 import { sanitizeResponseBounded } from '../utils/sanitize.js';
 import type { DebugContext } from './index.js';
 import type { JsonSchema } from '../project-building/contracts.js';
+import { resolveRuntimeOwnedPath } from '../utils/url.js';
 
 export const HISTORY_PAGE_MAX = 200;
 export const HISTORY_ARRAY_MAX = 20;
@@ -263,10 +264,13 @@ export function buildSessionHistoryPath(args: ParsedHistoryArgs): string {
 export async function sessionHistory(args: unknown, ctx: DebugContext): Promise<HistoryToolResult> {
   const parsed = sessionHistorySchema.parse(args);
   try {
-    const response = await ctx.httpClient.getBoundedJson(buildSessionHistoryPath(parsed), {
-      timeoutMs: HISTORY_TIMEOUT_MS,
-      maxResponseBytes: HISTORY_RESPONSE_MAX_BYTES,
-    });
+    const response = await ctx.httpClient.getBoundedJson(
+      resolveRuntimeOwnedPath(ctx.httpClient, buildSessionHistoryPath(parsed)),
+      {
+        timeoutMs: HISTORY_TIMEOUT_MS,
+        maxResponseBytes: HISTORY_RESPONSE_MAX_BYTES,
+      },
+    );
     return createHistoryResult(normalizeHistoryResponse(parsed.action, response));
   } catch (error) {
     return createHistoryResult(normalizeHistoryFailure(error));

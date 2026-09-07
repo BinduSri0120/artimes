@@ -18,12 +18,26 @@ import { buildStudioHeaders, deriveStudioUrl, readResponseBody } from '../utils/
 import { fetchWithTimeout } from '../utils/fetch.js';
 import { validatePathParam } from '../utils/validate.js';
 import { findSensitiveFieldPath, sanitizeResponse } from '../utils/sanitize.js';
+import { WORKFLOW_SOURCE_SANITIZER_POLICY } from '../utils/workflow-source.js';
 
 const WORKFLOW_READ_TIMEOUT_MS = 10_000;
 const WORKFLOW_MUTATION_TIMEOUT_MS = 15_000;
 const WORKFLOW_EXECUTION_TIMEOUT_MS = 30_000;
 const WORKFLOW_TOOL_MIN_TIMEOUT_MS = 1_000;
 const WORKFLOW_TOOL_MAX_TIMEOUT_MS = 600_000;
+
+const nullableOptionalIdSchema = z
+  .string()
+  .min(1)
+  .nullable()
+  .transform((value) => value ?? undefined)
+  .optional();
+
+const nullableOptionalHandleSchema = z
+  .string()
+  .nullable()
+  .transform((value) => value ?? undefined)
+  .optional();
 
 // =============================================================================
 // SCHEMA
@@ -40,6 +54,7 @@ const workflowNodeSchema = z.object({
   name: z.string().min(1),
   position: z.object({ x: z.number(), y: z.number() }),
   config: z.record(z.unknown()).optional(),
+  parentId: nullableOptionalIdSchema.describe('Parent loop/container node ID'),
 });
 
 const workflowEdgeSchema = z.object({
@@ -52,6 +67,7 @@ const workflowEdgeSchema = z.object({
       'Output handle on the source node. start/function/agent/tool/integration/api/delay/data_entry use "on_success" (+ "on_failure" when config.onFailureEnabled); human uses "on_approve"/"on_reject"; condition uses each condition id + "else"; loop uses "on_complete"/"on_failure". Omit to auto-normalize.',
     ),
   target: z.string().min(1),
+  targetHandle: nullableOptionalHandleSchema.describe('Input handle on the target node'),
   label: z.string().optional(),
 });
 
@@ -81,8 +97,22 @@ export const platformWorkflowsSchema = z.object({
     .optional()
     .describe('Workflow type for create (defaults to cx_automation)'),
   description: z.string().optional().describe('Workflow description (create)'),
-  nodes: z.array(workflowNodeSchema).optional().describe('Canvas node definitions (create)'),
-  edges: z.array(workflowEdgeSchema).optional().describe('Canvas edge connections (create)'),
+  nodes: z.array(workflowNodeSchema).optional().describe('Canvas node definitions (create/update)'),
+  edges: z.array(workflowEdgeSchema).optional().describe('Canvas edge connections (create/update)'),
+  variableNamespaceIds: z
+    .array(z.string().min(1))
+    .optional()
+    .describe('Variable namespace IDs (create/update)'),
+  inputSchema: z
+    .record(z.unknown())
+    .nullable()
+    .optional()
+    .describe('Workflow input JSON schema (create/update; null clears on update)'),
+  outputSchema: z
+    .record(z.unknown())
+    .nullable()
+    .optional()
+    .describe('Workflow output JSON schema (create/update; null clears on update)'),
   input: z.record(z.unknown()).optional().describe('Execution input payload (execute)'),
   changelog: z.string().optional().describe('Changelog note (publish)'),
   toolName: z.string().min(2).optional().describe('Project tool name (create_tool)'),
@@ -118,7 +148,7 @@ const defaultPlatformWorkflowsDependencies: PlatformWorkflowsDependencies = {
 // =============================================================================
 
 function success(data: unknown): string {
-  return JSON.stringify(sanitizeResponse(data), null, 2);
+  return JSON.stringify(sanitizeResponse(data, WORKFLOW_SOURCE_SANITIZER_POLICY), null, 2);
 }
 
 function error(message: string, hint?: string): string {
@@ -153,7 +183,7 @@ export async function platformWorkflows(
   ctx: DebugContext,
   dependencies: PlatformWorkflowsDependencies = defaultPlatformWorkflowsDependencies,
 ): Promise<string> {
-  const unsafePath = findSensitiveFieldPath(args);
+  const unsafePath = findSensitiveFieldPath(args, '', WORKFLOW_SOURCE_SANITIZER_POLICY);
   if (unsafePath) {
     return error(`Raw credential field "${unsafePath}" is not allowed in MCP arguments.`);
   }
@@ -205,6 +235,11 @@ export async function platformWorkflows(
           nodes,
           ...(edges ? { edges } : {}),
           ...(description ? { description } : {}),
+          ...(args.variableNamespaceIds !== undefined
+            ? { variableNamespaceIds: args.variableNamespaceIds }
+            : {}),
+          ...(args.inputSchema !== undefined ? { inputSchema: args.inputSchema } : {}),
+          ...(args.outputSchema !== undefined ? { outputSchema: args.outputSchema } : {}),
         };
         const response = await fetchOperation(
           basePath,
@@ -229,6 +264,11 @@ export async function platformWorkflows(
           ...(description !== undefined ? { description } : {}),
           ...(nodes ? { nodes } : {}),
           ...(edges ? { edges } : {}),
+          ...(args.variableNamespaceIds !== undefined
+            ? { variableNamespaceIds: args.variableNamespaceIds }
+            : {}),
+          ...(args.inputSchema !== undefined ? { inputSchema: args.inputSchema } : {}),
+          ...(args.outputSchema !== undefined ? { outputSchema: args.outputSchema } : {}),
         };
         if (Object.keys(body).length === 0) {
           return error('At least one field is required for the update action.');
@@ -320,7 +360,7 @@ export async function platformWorkflows(
             nextActions: [
               'Test the created workflow ProjectTool with platform_tools(action: "test").',
               'Read the target agent with platform_agents(action: "get"), add the returned tool DSL signature to its TOOLS section, then save the complete DSL with platform_agents(action: "save_dsl").',
-              'Call platform_versions(action: "create") to compile and verify the new binding before deployment.',
+              'Call platform_versions(action: "publish") to compile and verify the new binding before deployment.',
             ],
           },
           null,

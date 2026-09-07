@@ -4,6 +4,70 @@
 
 It works with any MCP-compatible client (Claude Code, Cursor, VS Code, Codex CLI, and others). The server is exposed to clients under the name **`arch-agent-platform`**, and its tools are prefixed `platform_*` and `debug_*`.
 
+## `1.5.1` release
+
+`@koreai/arch-mcp-tools@1.5.1` is a backward-compatible workflow-fidelity hotfix for the `1.5.x`
+line. It preserves parseable authored workflow function source byte-for-byte at the explicit
+`nodes[*].config.code` protocol path outside deterministic credential-sensitive syntax.
+Parser-backed checks conservatively govern literal values beneath credential-sensitive targets and
+recognized header/authorization forms: writes are rejected and reads are redacted. This boundary
+can intentionally redact non-secret metadata placed beneath credential-shaped identifiers such as
+`token`, `cookie`, or `password`; structured credential fields remain protected as before. It also
+carries the complete writable canvas
+contract across MCP, Runtime, and persistence:
+loop `parentId`, edge `targetHandle`, variable namespaces, and nullable input/output schemas.
+
+Compatibility guarantees for this hotfix:
+
+- the `legacy-v1` discovery profile preserves all 45 historical tools, action names, and schemas;
+- the default `current-v2` profile exposes the target-aware eval contract while retaining all 45
+  existing tool names;
+- existing requests remain valid because every new workflow input field is optional;
+- `readOnly` remains server-owned and is not added to create/update inputs;
+- older platform deployments continue to accept the requests they accepted before, although full
+  round-trip fidelity for the new canvas fields requires the matching Runtime deployment; and
+- `platform_workflows(create_tool)` now points callers to the supported
+  `platform_versions(action: "publish")` lifecycle rather than the retired create action.
+
+For reproducible installation:
+
+```bash
+npx -y @koreai/arch-mcp-tools@1.5.1
+```
+
+### Discovery profiles
+
+The packaged server defaults to `current-v2`. Embedders can select the historical contract with
+`discoveryProfile: "legacy-v1"`, and the CLI accepts the equivalent
+`--discovery-profile legacy-v1` option. The legacy profile is intended for clients that require the
+pre-target eval schemas; new integrations should use `current-v2`.
+
+Execution targets are typed and supplied only through the target field on eval create/update
+operations. Studio resolves and locks the target for the run, and subsequent get/status responses
+remain authoritative for the resolved target snapshot. Do not place a second target inside the
+free-form request body.
+
+### Migrating consumers to current-v2
+
+`current-v2` is additive for existing projects. Calls that omit `target` retain the previous Studio
+resolution and Runtime execution path; no project migration or Runtime behavior change is required.
+Clients should ignore response fields they do not understand and should read the structured
+`arch://contract/v2/manifest` resource instead of inferring capabilities from descriptions or tool
+counts. The manifest identifies the active profile, declares that target-less requests preserve the
+Runtime contract, and provides per-tool contract hashes.
+
+New clients should use this sequence:
+
+1. Read `arch://contract/v2/manifest`.
+2. For target-aware evals, call `platform_eval_sets` with `action: "targets"`.
+3. Pass exactly one typed `target` to the applicable create/update operation.
+4. Read the returned run `status` or `get` response and treat its locked target snapshot as
+   authoritative.
+
+Clients that require the pre-target schema or perform exact schema matching can launch the server
+with `--discovery-profile legacy-v1`. This fallback changes the published MCP contract only; it does
+not migrate project data or alter Runtime execution.
+
 ## `1.5.0` release
 
 `@koreai/arch-mcp-tools@1.5.0` is a substantial feature release while remaining a SemVer minor
@@ -48,7 +112,7 @@ args:     -y  @koreai/arch-mcp-tools
 ```
 
 Add it under a server named `arch-agent-platform` using your client's config below. The unpinned
-form follows the npm `latest` tag; use `@koreai/arch-mcp-tools@1.5.0` for a reproducible install.
+form follows the npm `latest` tag; use `@koreai/arch-mcp-tools@1.5.1` for a reproducible install.
 (No environment is baked in — see [Choosing an environment](#choosing-an-environment).)
 
 ### Claude Code
@@ -246,7 +310,7 @@ Generate eval assets, run eval workflows, and read CI evidence.
 | `platform_eval_personas`   | Manage and generate eval personas                |
 | `platform_eval_scenarios`  | Manage and generate eval scenarios               |
 | `platform_eval_evaluators` | Manage eval evaluators and templates             |
-| `platform_eval_sets`       | Manage eval sets                                 |
+| `platform_eval_sets`       | Manage eval sets and discover execution targets  |
 | `platform_eval_runs`       | Manage eval runs, preflight, cases, and heatmaps |
 | `debug_harness_logs`       | Get CI execution logs                            |
 
@@ -281,6 +345,16 @@ Connect to live sessions, trace failures, and inspect execution state.
 | `debug_get_errors`           | Get errors, warnings, and escalations              |
 | `debug_list_active_sessions` | List observable sessions                           |
 | `debug_session`              | Subscribe/unsubscribe to session traces            |
+
+#### Loaded session identity
+
+Each successful `debug_load_agent` result owns an independent Runtime connection. Loading another
+agent does not invalidate earlier returned session IDs: pass the intended `sessionId` to
+`debug_send_message` or `debug_get_current_state`, or omit it to use the most recently loaded
+session. MCP retains at most 32 loaded-session connections, expires inactive entries after 30
+minutes, and evicts the least recently used entry only after a replacement load succeeds
+at that bound. Reconnecting with a new token, changing environments or workspaces, and stopping the
+server close all retained loaded-session connections.
 
 #### Historical session analysis
 

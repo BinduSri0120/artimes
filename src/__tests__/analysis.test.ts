@@ -3,219 +3,11 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import type { TraceEventWithId, AgentState } from '../types.js';
+import { analyzeSession, analyzeTraces } from '../tools/analysis.js';
+import { TraceStore } from '../store/trace-store.js';
+import type { DebugContext } from '../tools/index.js';
 
-// Import the analysis logic by re-implementing test version
-// In a real scenario, we'd export analyzeTraces from analysis.ts
-
-interface Issue {
-  type: 'warning' | 'error' | 'info';
-  title: string;
-  description: string;
-  eventId?: string;
-}
-
-interface AnalysisResult {
-  summary: {
-    totalEvents: number;
-    eventCounts: Record<string, number>;
-    duration: number | null;
-    llmCalls: number;
-    toolCalls: number;
-    errors: number;
-  };
-  currentState: {
-    step: string | null;
-    phase: string;
-    collectedFields: string[];
-    missingFields: string[];
-  };
-  issues: Issue[];
-  suggestions: string[];
-}
-
-// Re-implement analyzeTraces for testing (mirrors analysis.ts)
-function analyzeTraces(traces: TraceEventWithId[], state?: AgentState): AnalysisResult {
-  const analysis: AnalysisResult = {
-    summary: {
-      totalEvents: traces.length,
-      eventCounts: {},
-      duration: null,
-      llmCalls: 0,
-      toolCalls: 0,
-      errors: 0,
-    },
-    currentState: {
-      step: null,
-      phase: state?.conversationPhase || 'unknown',
-      collectedFields: [],
-      missingFields: [],
-    },
-    issues: [],
-    suggestions: [],
-  };
-
-  // Count event types
-  for (const trace of traces) {
-    analysis.summary.eventCounts[trace.type] = (analysis.summary.eventCounts[trace.type] || 0) + 1;
-    if (trace.type === 'llm_call') analysis.summary.llmCalls++;
-    if (trace.type === 'tool_call') analysis.summary.toolCalls++;
-    if (trace.type === 'error') analysis.summary.errors++;
-  }
-
-  // Calculate duration
-  if (traces.length >= 2) {
-    const first = new Date(traces[0].timestamp).getTime();
-    const last = new Date(traces[traces.length - 1].timestamp).getTime();
-    analysis.summary.duration = last - first;
-  }
-
-  // Find current step from flow events
-  const flowSteps = traces.filter((t) => t.type === 'flow_step_enter');
-  if (flowSteps.length > 0) {
-    const lastStep = flowSteps[flowSteps.length - 1];
-    analysis.currentState.step = (lastStep.data as { stepName?: string })?.stepName || null;
-  }
-
-  // Extract collected fields from dsl_set events
-  const setEvents = traces.filter((t) => t.type === 'dsl_set');
-  for (const event of setEvents) {
-    const field = (event.data as { field?: string })?.field;
-    if (field && !analysis.currentState.collectedFields.includes(field)) {
-      analysis.currentState.collectedFields.push(field);
-    }
-  }
-
-  // Find missing fields from collect events
-  const collectEvents = traces.filter((t) => t.type === 'dsl_collect');
-  for (const event of collectEvents) {
-    const field = (event.data as { field?: string })?.field;
-    const collected = (event.data as { collected?: boolean })?.collected;
-    if (field && !collected && !analysis.currentState.missingFields.includes(field)) {
-      analysis.currentState.missingFields.push(field);
-    }
-  }
-
-  // Issue: Repeated step entry (potential loop)
-  const stepCounts: Record<string, number> = {};
-  for (const step of flowSteps) {
-    const stepName = (step.data as { stepName?: string })?.stepName || 'unknown';
-    stepCounts[stepName] = (stepCounts[stepName] || 0) + 1;
-  }
-  for (const [step, count] of Object.entries(stepCounts)) {
-    if (count > 3) {
-      analysis.issues.push({
-        type: 'warning',
-        title: 'Potential loop detected',
-        description: `Step "${step}" was entered ${count} times. This may indicate a loop condition.`,
-      });
-      analysis.suggestions.push(
-        `Check transition conditions for step "${step}". Ensure required fields are being collected and stored in context.`,
-      );
-    }
-  }
-
-  // Issue: Errors present
-  const errorEvents = traces.filter((t) => t.type === 'error');
-  for (const error of errorEvents) {
-    const errorMsg = (error.data as { message?: string })?.message || 'Unknown error';
-    analysis.issues.push({
-      type: 'error',
-      title: 'Error occurred',
-      description: errorMsg,
-      eventId: error.id,
-    });
-  }
-
-  // Issue: Constraint violations
-  const constraintFailures = traces.filter(
-    (t) => t.type === 'constraint_check' && !(t.data as { passed?: boolean })?.passed,
-  );
-  for (const failure of constraintFailures) {
-    const constraint = (failure.data as { constraint?: string })?.constraint || 'unknown';
-    analysis.issues.push({
-      type: 'warning',
-      title: 'Constraint violation',
-      description: `Constraint "${constraint}" was violated.`,
-      eventId: failure.id,
-    });
-    analysis.suggestions.push(
-      `Review the "${constraint}" constraint condition and verify context values meet requirements.`,
-    );
-  }
-
-  // Issue: Tool failures
-  const toolFailures = traces.filter(
-    (t) => t.type === 'tool_call' && (t.data as { success?: boolean })?.success === false,
-  );
-  for (const failure of toolFailures) {
-    const toolName = (failure.data as { tool?: string })?.tool || 'unknown';
-    const errorMsg = (failure.data as { error?: string })?.error || 'Unknown error';
-    analysis.issues.push({
-      type: 'error',
-      title: 'Tool call failed',
-      description: `Tool "${toolName}" failed: ${errorMsg}`,
-      eventId: failure.id,
-    });
-    analysis.suggestions.push(
-      `Check the "${toolName}" tool implementation and verify input parameters are correct.`,
-    );
-  }
-
-  // Issue: Missing required fields
-  if (analysis.currentState.missingFields.length > 0) {
-    analysis.issues.push({
-      type: 'info',
-      title: 'Missing required fields',
-      description: `The following fields are not yet collected: ${analysis.currentState.missingFields.join(', ')}`,
-    });
-    analysis.suggestions.push(
-      'The agent is waiting for the user to provide the missing information.',
-    );
-  }
-
-  // Issue: Many LLM calls (potential inefficiency)
-  if (analysis.summary.llmCalls > 10) {
-    analysis.issues.push({
-      type: 'info',
-      title: 'High LLM call count',
-      description: `${analysis.summary.llmCalls} LLM calls made. Consider optimizing prompts or adding caching.`,
-    });
-  }
-
-  // Issue: Escalation without resolution
-  const escalations = traces.filter((t) => t.type === 'escalation');
-  if (escalations.length > 1) {
-    analysis.issues.push({
-      type: 'warning',
-      title: 'Multiple escalations',
-      description: `${escalations.length} escalations occurred. Ensure agents can handle the request.`,
-    });
-    analysis.suggestions.push(
-      'Review escalation conditions and ensure at least one agent can resolve the request.',
-    );
-  }
-
-  // Issue: Long-running session
-  if (analysis.summary.duration && analysis.summary.duration > 60000) {
-    analysis.issues.push({
-      type: 'info',
-      title: 'Long-running session',
-      description: `Session has been active for ${Math.round(analysis.summary.duration / 1000)}s.`,
-    });
-  }
-
-  // Issue: No LLM calls (agent might be stuck)
-  if (traces.length > 5 && analysis.summary.llmCalls === 0) {
-    analysis.issues.push({
-      type: 'warning',
-      title: 'No LLM calls detected',
-      description:
-        'The agent has not made any LLM calls. It may be stuck in initialization or a non-LLM flow.',
-    });
-  }
-
-  return analysis;
-}
+let nextEventSeq = 1;
 
 // Helper to create trace events
 function createTrace(
@@ -229,10 +21,79 @@ function createTrace(
     timestamp: timestamp || new Date(),
     sessionId: 'test-session',
     data,
+    eventSeq: nextEventSeq++,
   };
 }
 
 describe('Session Analysis', () => {
+  describe('Handler', () => {
+    function context(overrides: {
+      activeSessionId?: string;
+      session?: Record<string, unknown>;
+      traces?: TraceEventWithId[];
+    }): DebugContext {
+      return {
+        sessionStore: {
+          getActiveSessionId: vi.fn(() => overrides.activeSessionId),
+          getSession: vi.fn(() => overrides.session),
+        },
+        traceStore: {
+          getBySession: vi.fn(() => overrides.traces ?? []),
+        },
+      } as unknown as DebugContext;
+    }
+
+    test('requires an explicit or active session', async () => {
+      const result = JSON.parse(await analyzeSession({}, context({})));
+
+      expect(result.error).toContain('No session specified and no active session');
+    });
+
+    test('reports an unknown requested session', async () => {
+      const result = JSON.parse(
+        await analyzeSession(
+          { sessionId: 'missing-session' },
+          context({ activeSessionId: 'other' }),
+        ),
+      );
+
+      expect(result).toEqual({ error: 'Session not found: missing-session' });
+    });
+
+    test('analyzes the active session and exposes its agent name', async () => {
+      const result = JSON.parse(
+        await analyzeSession(
+          {},
+          context({
+            activeSessionId: 'active-session',
+            session: {
+              state: { conversationPhase: 'complete' },
+              agentDetails: { name: 'ChronologyAgent' },
+            },
+            traces: [createTrace('agent_enter')],
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({
+        sessionId: 'active-session',
+        agentName: 'ChronologyAgent',
+        analysis: { summary: { totalEvents: 1 }, currentState: { phase: 'complete' } },
+      });
+    });
+
+    test('uses the compatibility agent-name fallback', async () => {
+      const result = JSON.parse(
+        await analyzeSession(
+          { sessionId: 'legacy-session' },
+          context({ session: { state: {} }, traces: [] }),
+        ),
+      );
+
+      expect(result.agentName).toBe('unknown');
+    });
+  });
+
   describe('Summary Statistics', () => {
     test('should count total events', () => {
       const traces = [
@@ -311,6 +172,83 @@ describe('Session Analysis', () => {
       expect(result.summary.duration).toBe(5000); // 5000ms
     });
 
+    test('uses authoritative timestamp order for the newest-first trace-store contract', () => {
+      const traceStore = new TraceStore();
+      traceStore.addEvent(
+        createTrace('flow_step_enter', { stepName: 'start' }, new Date('2024-01-01T10:00:00Z')),
+      );
+      traceStore.addEvent(
+        createTrace('flow_step_enter', { stepName: 'current' }, new Date('2024-01-01T10:00:05Z')),
+      );
+
+      const newestFirst = traceStore.getBySession('test-session');
+      expect(newestFirst.map((event) => event.data.stepName)).toEqual(['current', 'start']);
+
+      const result = analyzeTraces(newestFirst);
+
+      expect(result.summary.duration).toBe(5_000);
+      expect(result.currentState.step).toBe('current');
+    });
+
+    test('uses event sequence to order equal-millisecond events from newest-first browsing', () => {
+      const timestamp = new Date('2024-01-01T10:00:00.000Z');
+      const start = createTrace('flow_step_enter', { stepName: 'start' }, timestamp);
+      start.eventSeq = 41;
+      const current = createTrace('flow_step_enter', { stepName: 'current' }, timestamp);
+      current.eventSeq = 42;
+
+      const result = analyzeTraces([current, start]);
+
+      expect(result.currentState.step).toBe('current');
+    });
+
+    test('reverses newest-first input ties when canonical event sequence is unavailable', () => {
+      const timestamp = new Date('2024-01-01T10:00:00.000Z');
+      const current = createTrace('flow_step_enter', { stepName: 'current' }, timestamp);
+      const start = createTrace('flow_step_enter', { stepName: 'start' }, timestamp);
+      delete current.eventSeq;
+      delete start.eventSeq;
+      const result = analyzeTraces([current, start]);
+
+      expect(result.currentState.step).toBe('current');
+    });
+
+    test('uses one total fallback order for mixed sequenced and legacy timestamp ties', () => {
+      const timestamp = new Date('2024-01-01T10:00:00.000Z');
+      const newest = createTrace('flow_step_enter', { stepName: 'current' }, timestamp);
+      newest.eventSeq = 1;
+      const legacy = createTrace('flow_step_enter', { stepName: 'middle' }, timestamp);
+      delete legacy.eventSeq;
+      const oldest = createTrace('flow_step_enter', { stepName: 'start' }, timestamp);
+      oldest.eventSeq = 3;
+
+      const result = analyzeTraces([newest, legacy, oldest]);
+
+      expect(result.currentState.step).toBe('current');
+    });
+
+    test('reports malformed timestamps while retaining valid chronological evidence', () => {
+      const malformed = createTrace('flow_step_enter', { stepName: 'untrusted' });
+      malformed.id = 'malformed-timestamp';
+      malformed.timestamp = new Date('not-a-timestamp');
+
+      const result = analyzeTraces([
+        createTrace('agent_exit', {}, new Date('2024-01-01T10:00:05Z')),
+        malformed,
+        createTrace('agent_enter', {}, new Date('2024-01-01T10:00:00Z')),
+      ]);
+
+      expect(result.summary.totalEvents).toBe(3);
+      expect(result.summary.duration).toBe(5_000);
+      expect(result.issues).toContainEqual({
+        type: 'error',
+        title: 'Malformed trace timestamp',
+        description:
+          'Trace event "malformed-timestamp" has an invalid timestamp and was excluded from chronological analysis.',
+        eventId: 'malformed-timestamp',
+      });
+    });
+
     test('should return null duration for single event', () => {
       const traces = [createTrace('agent_enter')];
 
@@ -380,6 +318,32 @@ describe('Session Analysis', () => {
       expect(result.currentState.missingFields).toContain('phone');
       expect(result.currentState.missingFields).not.toContain('name');
     });
+
+    test('merges gathered state without duplicating trace-derived fields', () => {
+      const result = analyzeTraces(
+        [
+          createTrace('dsl_set', { field: 'email' }),
+          createTrace('dsl_collect', { field: 'phone', collected: false }),
+          createTrace('flow_step_enter', {}),
+        ],
+        {
+          gatherProgress: {
+            email: { collected: true },
+            phone: { collected: false },
+            name: { collected: true },
+            address: { collected: false },
+            ignoredNull: null,
+            ignoredString: 'invalid',
+          },
+        } as unknown as AgentState,
+      );
+
+      expect(result.currentState).toMatchObject({
+        step: null,
+        collectedFields: ['email', 'name'],
+        missingFields: ['phone', 'address'],
+      });
+    });
   });
 
   describe('Loop Detection', () => {
@@ -424,6 +388,217 @@ describe('Session Analysis', () => {
       const result = analyzeTraces(traces);
 
       expect(result.suggestions.some((s) => s.includes('broken_step'))).toBe(true);
+    });
+  });
+
+  describe('Orchestration correctness', () => {
+    function orchestrationTrace(
+      id: string,
+      type: TraceEventWithId['type'],
+      data: Record<string, unknown>,
+      offsetMs: number,
+      turnId = 'turn-orchestration',
+    ): TraceEventWithId {
+      return {
+        ...createTrace(type, data, new Date(`2024-01-01T10:00:00.000Z`)),
+        id,
+        timestamp: new Date(Date.parse('2024-01-01T10:00:00.000Z') + offsetMs),
+        turnId,
+      } as TraceEventWithId;
+    }
+
+    test('detects duplicate final output and a response copied across successful completion', () => {
+      const result = analyzeTraces([
+        orchestrationTrace(
+          'response-before',
+          'agent_response',
+          {
+            agentName: 'BillingSpecialist',
+            content: 'Your request is complete.',
+            isFinalForTurn: true,
+          },
+          0,
+        ),
+        orchestrationTrace(
+          'completion',
+          'completion_check',
+          {
+            agent: 'Supervisor',
+            result: true,
+          },
+          1,
+        ),
+        orchestrationTrace(
+          'response-copy',
+          'agent_response',
+          {
+            agentName: 'Supervisor',
+            response: 'Your request is complete.',
+            isFinalForTurn: true,
+          },
+          2,
+        ),
+      ]);
+
+      expect(result.issues.map((issue) => issue.title)).toEqual(
+        expect.arrayContaining(['Unexpected completion response copy']),
+      );
+    });
+
+    test('detects an accepted queued task that reaches turn completion without dispatch', () => {
+      const result = analyzeTraces([
+        orchestrationTrace(
+          'accepted',
+          'multi_intent_queue_accepted',
+          {
+            intent: 'check_balance',
+            target: 'BalanceSpecialist',
+            targetKind: 'agent',
+          },
+          0,
+        ),
+        orchestrationTrace(
+          'closed',
+          'agent_response',
+          {
+            agentName: 'Supervisor',
+            content: 'Anything else?',
+            isFinalForTurn: true,
+          },
+          10,
+        ),
+      ]);
+
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({
+          title: 'Accepted queued task was not dispatched',
+          eventId: 'accepted',
+        }),
+      );
+    });
+
+    test('does not report a queued task whose targeted dispatch commits', () => {
+      const result = analyzeTraces([
+        orchestrationTrace(
+          'accepted',
+          'multi_intent_queue_accepted',
+          {
+            intent: 'check_balance',
+            target: 'BalanceSpecialist',
+            targetKind: 'agent',
+          },
+          0,
+        ),
+        orchestrationTrace(
+          'handoff',
+          'handoff',
+          {
+            from: 'Supervisor',
+            to: 'BalanceSpecialist',
+          },
+          1,
+        ),
+        orchestrationTrace(
+          'closed',
+          'agent_response',
+          {
+            agentName: 'BalanceSpecialist',
+            content: 'Your balance is available.',
+            isFinalForTurn: true,
+          },
+          2,
+        ),
+      ]);
+
+      expect(result.issues.map((issue) => issue.title)).not.toContain(
+        'Accepted queued task was not dispatched',
+      );
+    });
+
+    test('detects a matched specialist route that the supervisor bypasses', () => {
+      const result = analyzeTraces([
+        orchestrationTrace(
+          'route-match',
+          'handoff_condition_check',
+          {
+            sourceAgent: 'Supervisor',
+            targetAgent: 'BillingSpecialist',
+            result: true,
+            decisionId: 'decision-billing',
+          },
+          0,
+        ),
+        orchestrationTrace(
+          'supervisor-output',
+          'agent_response',
+          {
+            agentName: 'Supervisor',
+            content: 'I handled billing myself.',
+            isFinalForTurn: true,
+          },
+          1,
+        ),
+      ]);
+
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({
+          title: 'Matched specialist route was bypassed',
+          eventId: 'route-match',
+        }),
+      );
+    });
+
+    test('does not report a matched specialist route followed by its handoff', () => {
+      const result = analyzeTraces([
+        orchestrationTrace(
+          'route-match',
+          'handoff_condition_check',
+          {
+            sourceAgent: 'Supervisor',
+            targetAgent: 'BillingSpecialist',
+            result: true,
+            decisionId: 'decision-billing',
+          },
+          0,
+        ),
+        orchestrationTrace(
+          'route-dispatch',
+          'handoff',
+          {
+            from: 'Supervisor',
+            to: 'BillingSpecialist',
+            decisionId: 'decision-billing',
+          },
+          1,
+        ),
+      ]);
+
+      expect(result.issues.map((issue) => issue.title)).not.toContain(
+        'Matched specialist route was bypassed',
+      );
+    });
+
+    test('detects repeated handoff cycles and runaway trace volume', () => {
+      const cycle = [
+        orchestrationTrace('handoff-a-b-1', 'handoff', { from: 'A', to: 'B' }, 0),
+        orchestrationTrace('handoff-b-a-1', 'handoff', { from: 'B', to: 'A' }, 1),
+        orchestrationTrace('handoff-a-b-2', 'handoff', { from: 'A', to: 'B' }, 2),
+        orchestrationTrace('handoff-b-a-2', 'handoff', { from: 'B', to: 'A' }, 3),
+      ];
+      const runawayVolume = Array.from({ length: 1_001 }, (_, index) =>
+        orchestrationTrace(
+          `decision-${index}`,
+          'engine_decision',
+          { decision: 'retry' },
+          index + 4,
+        ),
+      );
+
+      const result = analyzeTraces([...cycle, ...runawayVolume]);
+
+      expect(result.issues.map((issue) => issue.title)).toEqual(
+        expect.arrayContaining(['Runaway handoff cycle', 'Runaway trace volume']),
+      );
     });
   });
 

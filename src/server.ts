@@ -19,6 +19,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { WebSocketClient } from './client/websocket-client.js';
+import { SessionConnectionRegistry } from './client/session-connection-registry.js';
 import { HttpClient } from './client/http-client.js';
 import { SessionStore } from './store/session-store.js';
 import { TraceStore } from './store/trace-store.js';
@@ -30,7 +31,14 @@ import {
 import { deriveUrls } from './utils/url.js';
 import { DEFAULT_HTTP_URL, DEFAULT_WS_URL } from './constants.js';
 import { sanitizeResponse, sanitizeResponseBounded } from './utils/sanitize.js';
-import { effectiveInputSchema, tools, getTool, type DebugContext } from './tools/index.js';
+import {
+  effectiveInputSchema,
+  getTool,
+  getTools,
+  type DebugContext,
+  type ToolDefinition,
+  type ToolDiscoveryProfile,
+} from './tools/index.js';
 import {
   ARCH_MCP_LOG_PREFIX,
   ARCH_MCP_SERVER_NAME,
@@ -65,7 +73,14 @@ import {
   readKnowledgeResource,
   type KnowledgeCatalogReader,
 } from './knowledge/discovery.js';
+import { createArchKnowledgeCatalog } from './knowledge/catalog.js';
 import type { ArchKnowledgeCatalog } from './knowledge/contracts.js';
+import {
+  getContractDiscoveryMeta,
+  isContractResourceUri,
+  listContractResources,
+  readContractResource,
+} from './contract/discovery.js';
 
 const PROJECT_BUILDER_INSTRUCTIONS =
   'Use platform_project_builder to discover registered domains and authoritative dependencies before planning. Continue durable work with platform_project_builder_operations. Workflow is the first provider, not a special client-side convention. Never send raw secrets; use opaque auth-profile and integration references. A consumed action with an unknown outcome must be verified, never retried blindly.';
@@ -87,19 +102,26 @@ export interface MCPDebugServerOptions {
   projectBuilderTransportDependencies?: ProjectBuilderStudioTransportDependencies;
   /** Optional catalog source for embedding and failure-isolation verification. */
   knowledgeCatalogFactory?: () => ArchKnowledgeCatalog;
+  /** Published MCP tool contract to expose to the connected client. */
+  discoveryProfile?: ToolDiscoveryProfile;
 }
 
 export class MCPDebugServer {
   private server: Server;
   private wsClient: WebSocketClient;
+  private sessionConnections: SessionConnectionRegistry;
   private httpClient: HttpClient;
   private sessionStore: SessionStore;
   private traceStore: TraceStore;
   private context: SplitPortDebugContext;
   private projectBuilderRegistry: ProjectBuilderDomainRegistry;
   private knowledgeCatalogReader: KnowledgeCatalogReader;
+  private readonly discoveryProfile: ToolDiscoveryProfile;
+  private readonly exposedTools: ToolDefinition[];
 
   constructor(options: MCPDebugServerOptions = {}) {
+    this.discoveryProfile = options.discoveryProfile ?? 'current-v2';
+    this.exposedTools = getTools(this.discoveryProfile);
     let wsUrl: string | undefined;
     let httpUrl: string | undefined;
 
@@ -124,10 +146,16 @@ export class MCPDebugServer {
 
     this.sessionStore = new SessionStore();
     this.traceStore = new TraceStore();
+    this.sessionConnections = new SessionConnectionRegistry(this.wsClient, {
+      configureClient: (client) => this.setupWebSocketHandlers(client, false),
+      onEvict: (sessionId) => this.sessionStore.deleteSession(sessionId),
+    });
     this.projectBuilderRegistry = options.projectBuilderProviders
       ? createProjectBuilderDomainRegistry(options.projectBuilderProviders)
       : createProductionProjectBuilderDomainRegistry();
-    this.knowledgeCatalogReader = createKnowledgeCatalogReader(options.knowledgeCatalogFactory);
+    this.knowledgeCatalogReader = createKnowledgeCatalogReader(
+      options.knowledgeCatalogFactory ?? (() => createArchKnowledgeCatalog(this.exposedTools)),
+    );
 
     // Create context for tools
     this.context = {
@@ -135,6 +163,7 @@ export class MCPDebugServer {
       httpClient: this.httpClient,
       sessionStore: this.sessionStore,
       traceStore: this.traceStore,
+      sessionConnections: this.sessionConnections,
       authenticate: (options?: AuthOptions) => this.authenticate(options),
       projectBuilderRegistry: this.projectBuilderRegistry,
       studioBaseUrl: options.studioUrl,
@@ -175,38 +204,41 @@ export class MCPDebugServer {
   /**
    * Set up WebSocket event handlers to populate stores
    */
-  private setupWebSocketHandlers(): void {
+  private setupWebSocketHandlers(
+    client: WebSocketClient = this.wsClient,
+    logConnectionStatus = true,
+  ): void {
     // Handle trace events
-    this.wsClient.onTraceEvent = (sessionId, event) => {
+    client.onTraceEvent = (sessionId, event) => {
       this.traceStore.addEvent(event);
       this.sessionStore.touchSession(sessionId);
     };
 
     // Handle state updates
-    this.wsClient.onStateUpdate = (sessionId, state) => {
+    client.onStateUpdate = (sessionId, state) => {
       this.sessionStore.updateState(sessionId, state);
     };
 
     // Handle agent loaded
-    this.wsClient.onAgentLoaded = (sessionId, agent) => {
+    client.onAgentLoaded = (sessionId, agent) => {
       // Session is created in the loadAgent tool handler
       this.sessionStore.updateAgentDetails(sessionId, agent);
     };
 
     // Handle connection status
-    this.wsClient.onConnected = () => {
-      writeMcpLog('info', 'Connected to server');
+    client.onConnected = () => {
+      if (logConnectionStatus) writeMcpLog('info', 'Connected to server');
     };
 
-    this.wsClient.onDisconnected = () => {
-      writeMcpLog('info', 'Disconnected from server');
+    client.onDisconnected = () => {
+      if (logConnectionStatus) writeMcpLog('info', 'Disconnected from server');
     };
 
-    this.wsClient.onError = (message) => {
+    client.onError = (message) => {
       writeMcpLog('error', 'WebSocket error', { message });
     };
 
-    this.wsClient.onInfo = (message, configured) => {
+    client.onInfo = (message, configured) => {
       writeMcpLog('info', message, { apiConfigured: configured });
     };
   }
@@ -218,7 +250,8 @@ export class MCPDebugServer {
     // List available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
-        tools: tools.map((tool) => ({
+        _meta: { archContract: getContractDiscoveryMeta(this.discoveryProfile) },
+        tools: this.exposedTools.map((tool) => ({
           name: tool.name,
           description: formatArchToolDescription(tool),
           inputSchema: effectiveInputSchema(tool),
@@ -232,7 +265,7 @@ export class MCPDebugServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
-      const tool = getTool(name);
+      const tool = getTool(name, this.discoveryProfile);
       if (!tool) {
         return {
           content: [
@@ -246,6 +279,7 @@ export class MCPDebugServer {
       }
 
       try {
+        rejectLegacyTargetArguments(this.discoveryProfile, name, args);
         // Parse and validate arguments
         const parsedArgs = tool.schema.parse(args || {});
 
@@ -314,6 +348,7 @@ export class MCPDebugServer {
       resources: [
         ...listProjectBuilderResources(this.projectBuilderRegistry),
         ...listKnowledgeResources(),
+        ...listContractResources(),
       ],
     }));
 
@@ -325,6 +360,9 @@ export class MCPDebugServer {
     }));
 
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      if (isContractResourceUri(request.params.uri)) {
+        return readContractResource(request.params.uri, this.discoveryProfile);
+      }
       if (isKnowledgeResourceUri(request.params.uri)) {
         return readKnowledgeResource(request.params.uri, this.knowledgeCatalogReader);
       }
@@ -369,9 +407,24 @@ export class MCPDebugServer {
    * Stop the server
    */
   async stop(): Promise<void> {
+    this.sessionConnections.clear();
     this.wsClient.disconnect();
     await this.server.close();
     writeMcpLog('info', 'Server stopped');
+  }
+}
+
+function rejectLegacyTargetArguments(
+  profile: ToolDiscoveryProfile,
+  toolName: string,
+  args: unknown,
+): void {
+  if (profile !== 'legacy-v1' || !args || typeof args !== 'object') return;
+  if (
+    (toolName === 'platform_eval_sets' || toolName === 'platform_eval_runs') &&
+    ('target' in args || 'evalTarget' in args)
+  ) {
+    throw new Error(`${toolName} target execution requires the current-v2 discovery profile.`);
   }
 }
 

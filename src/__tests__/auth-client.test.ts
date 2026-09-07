@@ -1179,6 +1179,26 @@ describe('authenticate', () => {
       ).rejects.toThrow('expired');
     });
 
+    test('stops polling with an actionable error when the user denies authorization', async () => {
+      const clients = createClients();
+      const harness = createAuthHarness({
+        fetchResponses: [
+          jsonResponse({ error: 'access_denied' }, { status: 403, statusText: 'Forbidden' }),
+        ],
+      });
+
+      await expect(
+        authenticate(
+          clients.httpClient,
+          clients.wsClient,
+          { deviceCode: 'dc-123' },
+          harness.dependencies,
+        ),
+      ).rejects.toThrow('was denied');
+      expect(harness.sleepCalls).toEqual([]);
+      expect(harness.fetchCalls).toHaveLength(1);
+    });
+
     test.each([
       {
         name: 'authorization_pending',

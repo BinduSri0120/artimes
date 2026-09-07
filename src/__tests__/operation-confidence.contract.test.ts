@@ -122,6 +122,12 @@ function sampleInput(
   const value = sampleValue(selected, 'root');
   if (!isRecord(value)) throw new Error(`Operation schema is not an object for ${action}`);
   value.action = action;
+  if (operationId.startsWith('platform_eval_sets:') && action !== 'create' && action !== 'update') {
+    delete value.target;
+  }
+  if (operationId.startsWith('platform_eval_runs:') && action !== 'create') {
+    delete value.target;
+  }
   if (operationId === 'platform_project_builder:inspect') value.domain = 'project';
   if (operationId === 'platform_auth_profiles:create') {
     value.authType = 'none';
@@ -167,6 +173,7 @@ function sampleValue(schema: unknown, propertyName: string): unknown {
   if (propertyName === 'paramMapping') return { sample: '$.summary' };
   if (propertyName === 'allowedOrigins') return ['https://example.invalid'];
   if (propertyName === 'metadata') return {};
+  if (propertyName === 'inputSchema' || propertyName === 'outputSchema') return {};
   if (propertyName === 'scope') return 'project';
   if (propertyName === 'runIds') return ['run-a', 'run-b'];
   if (propertyName === 'transcript') return '{}';

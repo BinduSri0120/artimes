@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildStudioHeaders, deriveStudioUrl, requestStudioJson } from '../utils/studio-api.js';
+import {
+  buildStudioHeaders,
+  deriveStudioUrl,
+  postStudioJson,
+  readResponseBody,
+  requestStudioJson,
+} from '../utils/studio-api.js';
 import type { DebugContext } from '../tools/index.js';
 
 describe('deriveStudioUrl', () => {
@@ -79,5 +85,31 @@ describe('requestStudioJson', () => {
 
     expect(result.ok).toBe(true);
     expect(calls).toEqual(['http://127.0.0.1:15173/api/arch-mcp/capabilities']);
+  });
+
+  it('supports empty and non-JSON bodies without weakening request defaults', async () => {
+    expect(await readResponseBody(new Response(''))).toBeNull();
+    expect(await readResponseBody(new Response('plain response'))).toBe('plain response');
+
+    const calls: Array<{ url: string; options?: RequestInit; timeoutMs?: number }> = [];
+    const ctx = {
+      httpClient: {
+        getBaseUrl: () => 'https://agents-dev.kore.ai',
+        getAuthToken: () => undefined,
+      },
+    } as unknown as DebugContext;
+    const result = await postStudioJson(ctx, '/api/test', { ok: true }, undefined, {
+      fetchWithTimeout: async (url, options, timeoutMs) => {
+        calls.push({ url, options, timeoutMs });
+        return new Response(null, { status: 204 });
+      },
+    });
+
+    expect(result).toMatchObject({ ok: true, body: null });
+    expect(calls[0]).toMatchObject({
+      url: 'https://agents-dev.kore.ai/api/test',
+      options: { method: 'POST', body: '{"ok":true}' },
+      timeoutMs: 30_000,
+    });
   });
 });

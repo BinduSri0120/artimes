@@ -46,13 +46,22 @@ export async function getCurrentState(
     });
   }
 
+  const wsClient = ctx.sessionConnections?.get(sessionId) ?? ctx.wsClient;
+  if (ctx.sessionConnections && wsClient === ctx.wsClient) {
+    return JSON.stringify({
+      success: false,
+      error: `Dedicated connection unavailable for session: ${sessionId}. Load the agent again.`,
+    });
+  }
+
   // If connected, request fresh state from server
-  if (ctx.wsClient.isConnected()) {
+  if (wsClient.isConnected()) {
     return new Promise((resolve) => {
       let resolved = false;
       const timeout = setTimeout(() => {
         if (!resolved) {
           resolved = true;
+          wsClient.onStateUpdate = originalOnStateUpdate;
           resolve(
             JSON.stringify({
               success: false,
@@ -63,12 +72,12 @@ export async function getCurrentState(
       }, 5000);
 
       // Set up one-time handler
-      const originalOnStateUpdate = ctx.wsClient.onStateUpdate;
+      const originalOnStateUpdate = wsClient.onStateUpdate;
 
-      ctx.wsClient.onStateUpdate = (msgSessionId, state) => {
+      wsClient.onStateUpdate = (msgSessionId, state) => {
         if (msgSessionId === sessionId) {
           // Restore original handler
-          ctx.wsClient.onStateUpdate = originalOnStateUpdate;
+          wsClient.onStateUpdate = originalOnStateUpdate;
 
           // Update store
           ctx.sessionStore.updateState(sessionId, state);
@@ -93,7 +102,7 @@ export async function getCurrentState(
       };
 
       // Request state
-      ctx.wsClient.getState(sessionId);
+      wsClient.getState(sessionId);
     });
   }
 

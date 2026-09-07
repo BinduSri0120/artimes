@@ -230,7 +230,6 @@ exports[`operation confidence focused evidence > debug_docs:invoke matches its s
   "operationId": "debug_docs:invoke",
   "outcomeKeys": [
     "detail",
-    "hint",
     "query",
     "resultCount",
     "results",
@@ -1494,6 +1493,19 @@ exports[`operation confidence focused evidence > platform_eval_sets:list matches
     "fetch:GET:http://127.0.0.1:5173/api/projects/projectId-1/evals/sets?sample=sample-1",
   ],
   "operationId": "platform_eval_sets:list",
+  "outcomeKeys": [
+    "data",
+    "success",
+  ],
+}
+`;
+
+exports[`operation confidence focused evidence > platform_eval_sets:targets matches its schema, handler outcome, and transport-effect contract 1`] = `
+{
+  "effects": [
+    "fetch:GET:http://127.0.0.1:5173/api/projects/projectId-1/evals/targets?sample=sample-1",
+  ],
+  "operationId": "platform_eval_sets:targets",
   "outcomeKeys": [
     "data",
     "success",

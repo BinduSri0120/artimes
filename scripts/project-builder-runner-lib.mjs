@@ -140,20 +140,18 @@ export async function startOwnedServices(config, substitutions = {}) {
 }
 
 export async function stopOwnedProcesses(owned) {
-  const active = [...owned]
-    .reverse()
-    .filter((record) => record.child.exitCode === null && record.child.signalCode === null);
+  const records = [...owned].reverse();
+  const active = records.filter(
+    (record) => record.child.exitCode === null && record.child.signalCode === null,
+  );
   for (const record of active) {
     signalOwnedProcess(record.child, 'SIGTERM');
   }
-  await Promise.all(
-    active.map(async (record) => {
-      await waitForExit(record.child, PROCESS_STOP_TIMEOUT_MS);
-      // A wrapper can exit on SIGTERM while a descendant in its detached
-      // process group survives. Always kill the owned group before returning.
-      signalOwnedProcess(record.child, 'SIGKILL');
-    }),
-  );
+  await Promise.all(active.map((record) => waitForExit(record.child, PROCESS_STOP_TIMEOUT_MS)));
+  // A wrapper can exit on SIGTERM, or can have already exited while a
+  // descendant in its detached process group survives. Signal every owned
+  // group after the grace period so cleanup does not depend on wrapper state.
+  for (const record of records) signalOwnedProcess(record.child, 'SIGKILL');
 }
 
 export function partitionTransitionProcesses(owned, transitionServiceNames = ['mongo', 'redis']) {

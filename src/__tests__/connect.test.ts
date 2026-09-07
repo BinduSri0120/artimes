@@ -59,6 +59,13 @@ function createMockContext(overrides?: Partial<DebugContext>): DebugContext {
     } as any,
     sessionStore: { clear: vi.fn() } as any,
     traceStore: { clear: vi.fn() } as any,
+    sessionConnections: {
+      createForLoad: vi.fn(),
+      register: vi.fn(),
+      get: vi.fn(),
+      discard: vi.fn(),
+      clear: vi.fn(),
+    },
     authenticate: vi.fn().mockResolvedValue({ token: 'test-jwt', method: 'device_auth' }),
     ...overrides,
   };
@@ -204,6 +211,7 @@ describe('connect tool', () => {
       expect(result.status).toBe('token_refreshed');
       expect(ctx.wsClient.reconnect).toHaveBeenCalledWith({ authToken: 'new-jwt-token' });
       expect(ctx.httpClient.setAuthToken).toHaveBeenCalledWith('new-jwt-token');
+      expect(ctx.sessionConnections?.clear).toHaveBeenCalledOnce();
       expect(ctx.wsClient.setAuthToken).not.toHaveBeenCalledWith('new-jwt-token');
       // Should NOT use the unauthenticated disconnect/re-authenticate path.
       expect(ctx.wsClient.disconnect).not.toHaveBeenCalled();
@@ -851,3 +859,24 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   throw new Error('Condition was not reached');
 }
+
+describe('token refresh preserves same-identity debug context', () => {
+  test('re-presenting a token for the same workspace and user keeps sessions and traces', async () => {
+    const server = await createTestWebSocketServer((token) => token === SOURCE_TOKEN);
+    const harness = await createRealContext(server.url);
+
+    const result = JSON.parse(await connect({ authToken: SOURCE_TOKEN }, harness.ctx));
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'token_refreshed',
+      contextReset: false,
+      activeTarget: { tenantId: 'source-tenant' },
+    });
+    expect(server.attemptedTokens).toEqual([SOURCE_TOKEN, SOURCE_TOKEN]);
+    expect(harness.sessionClear).not.toHaveBeenCalled();
+    expect(harness.traceClear).not.toHaveBeenCalled();
+    expect(harness.ctx.sessionStore.getSession('source-session')).toBeDefined();
+    expect(harness.wsClient.isConnected()).toBe(true);
+  });
+});

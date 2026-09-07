@@ -92,11 +92,33 @@ export async function loadAgent(args: LoadAgentArgs, ctx: DebugContext): Promise
     });
   }
 
+  let wsClient = ctx.wsClient;
+  if (ctx.sessionConnections) {
+    try {
+      wsClient = await ctx.sessionConnections.createForLoad();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return JSON.stringify({
+        success: false,
+        error: `Failed to create an isolated debug session connection: ${message}`,
+      });
+    }
+  }
+
   return new Promise((resolve) => {
     let resolved = false;
+    const discardDedicatedConnection = () => {
+      if (wsClient !== ctx.wsClient) ctx.sessionConnections?.discard(wsClient);
+    };
+    const restoreHandlers = () => {
+      wsClient.onAgentLoaded = originalOnAgentLoaded;
+      wsClient.onAgentLoadError = originalOnAgentLoadError;
+    };
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        restoreHandlers();
+        discardDedicatedConnection();
         resolve(
           JSON.stringify({
             success: false,
@@ -107,15 +129,15 @@ export async function loadAgent(args: LoadAgentArgs, ctx: DebugContext): Promise
     }, 30000);
 
     // Set up one-time handlers for the response
-    const originalOnAgentLoaded = ctx.wsClient.onAgentLoaded;
-    const originalOnAgentLoadError = ctx.wsClient.onAgentLoadError;
+    const originalOnAgentLoaded = wsClient.onAgentLoaded;
+    const originalOnAgentLoadError = wsClient.onAgentLoadError;
 
-    ctx.wsClient.onAgentLoaded = (sessionId, agent) => {
+    wsClient.onAgentLoaded = (sessionId, agent) => {
       // Restore original handlers
-      ctx.wsClient.onAgentLoaded = originalOnAgentLoaded;
-      ctx.wsClient.onAgentLoadError = originalOnAgentLoadError;
+      restoreHandlers();
 
       // Create session in store
+      if (wsClient !== ctx.wsClient) ctx.sessionConnections?.register(sessionId, wsClient);
       ctx.sessionStore.createSession(sessionId, agent.id, agent);
 
       clearTimeout(timeout);
@@ -144,10 +166,10 @@ export async function loadAgent(args: LoadAgentArgs, ctx: DebugContext): Promise
       originalOnAgentLoaded?.(sessionId, agent);
     };
 
-    ctx.wsClient.onAgentLoadError = (error) => {
+    wsClient.onAgentLoadError = (error) => {
       // Restore original handlers
-      ctx.wsClient.onAgentLoaded = originalOnAgentLoaded;
-      ctx.wsClient.onAgentLoadError = originalOnAgentLoadError;
+      restoreHandlers();
+      discardDedicatedConnection();
 
       clearTimeout(timeout);
       if (!resolved) {
@@ -165,6 +187,15 @@ export async function loadAgent(args: LoadAgentArgs, ctx: DebugContext): Promise
     };
 
     // Send load request
-    ctx.wsClient.loadAgent(agentPath, projectId);
+    try {
+      wsClient.loadAgent(agentPath, projectId);
+    } catch (error) {
+      clearTimeout(timeout);
+      restoreHandlers();
+      discardDedicatedConnection();
+      resolved = true;
+      const message = error instanceof Error ? error.message : String(error);
+      resolve(JSON.stringify({ success: false, error: message }));
+    }
   });
 }

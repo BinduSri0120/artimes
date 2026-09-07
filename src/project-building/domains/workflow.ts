@@ -5,6 +5,7 @@ import {
   type ProjectBuilderRouteRequest,
 } from '../contracts.js';
 import { findSensitiveFieldPathBounded } from '../../utils/sanitize.js';
+import { isWorkflowSourceCodePath } from '../../utils/workflow-source.js';
 
 const objectSchema: JsonSchema = Object.freeze({ type: 'object', additionalProperties: false });
 const actionNames = [
@@ -84,7 +85,9 @@ function buildWorkflowRequest(
   action: string,
   request: { readonly projectId: string; readonly operationId?: string; readonly input?: unknown },
 ): ProjectBuilderRouteRequest {
-  const sensitivePath = findSensitiveFieldPathBounded(request.input);
+  const sensitivePath = findSensitiveFieldPathBounded(request.input, {
+    preserveStringAtPath: isWorkflowSourceCodePath,
+  });
   if (sensitivePath) {
     throw new Error(
       `Raw credentials are not accepted by the project builder (${sensitivePath}); use an opaque auth-profile reference`,

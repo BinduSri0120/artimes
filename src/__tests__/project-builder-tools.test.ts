@@ -62,6 +62,38 @@ describe('generic project-builder tools', () => {
     });
   });
 
+  it('preserves workflow source in project-builder responses while redacting credential literals', async () => {
+    const source = 'const token = tokenStep.access_token || fallback;';
+    const recorder = createRecorder(
+      capabilityResponse(),
+      jsonResponse({
+        nodes: [
+          { config: { code: source } },
+          { config: { code: "const auth = 'Bearer embedded-secret';" } },
+        ],
+      }),
+    );
+
+    const planned = await platformProjectBuilder(
+      {
+        action: 'plan',
+        domain: 'workflow',
+        projectId: 'project-1',
+        input: { nodes: [{ config: { code: source } }] },
+      },
+      context(),
+      recorder.dependencies,
+    );
+
+    expect(planned.structuredContent).toMatchObject({
+      success: true,
+      data: {
+        nodes: [{ config: { code: source } }, { config: { code: "const auth = '[REDACTED]';" } }],
+      },
+    });
+    expect(JSON.parse(planned.content[0].text)).toEqual(planned.structuredContent);
+  });
+
   it('negotiates every live request before one authoritative project request', async () => {
     const recorder = createRecorder(
       capabilityResponse(),

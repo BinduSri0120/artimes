@@ -496,6 +496,7 @@ async function applyWorkspaceSwitch(
     credentialLock.release();
   }
   ctx.httpClient.setAuthToken(data.accessToken);
+  ctx.sessionConnections?.clear();
   ctx.sessionStore.clear();
   ctx.traceStore.clear();
 

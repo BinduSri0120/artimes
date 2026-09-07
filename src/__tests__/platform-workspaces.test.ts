@@ -44,6 +44,7 @@ interface WorkspaceContextHarness {
   ctx: DebugContext;
   httpClient: HttpClient;
   wsClient: WebSocketClient;
+  connectionClear: ReturnType<typeof vi.fn>;
   sessionClear: ReturnType<typeof vi.spyOn>;
   traceClear: ReturnType<typeof vi.spyOn>;
 }
@@ -110,6 +111,7 @@ describe('platform_workspaces', () => {
     expect(harness.httpClient.getAuthToken()).toBe(TARGET_TOKEN);
     expect(harness.wsClient.getAuthToken()).toBe(TARGET_TOKEN);
     expect(harness.wsClient.isConnected()).toBe(true);
+    expect(harness.connectionClear).toHaveBeenCalledOnce();
     expect(harness.sessionClear).toHaveBeenCalledOnce();
     expect(harness.traceClear).toHaveBeenCalledOnce();
     expect(dependencies.writtenCredentials).toEqual([
@@ -270,6 +272,7 @@ describe('platform_workspaces', () => {
     expect(result).toMatchObject({ success: true, websocketReconnected: false });
     expect(harness.httpClient.getAuthToken()).toBe(TARGET_TOKEN);
     expect(harness.wsClient.getAuthToken()).toBe(TARGET_TOKEN);
+    expect(harness.connectionClear).toHaveBeenCalledOnce();
     expect(harness.sessionClear).toHaveBeenCalledOnce();
     expect(harness.traceClear).toHaveBeenCalledOnce();
   });
@@ -918,6 +921,7 @@ function createWorkspaceContext(
   });
   const sessionStore = new SessionStore();
   const traceStore = new TraceStore();
+  const connectionClear = vi.fn();
   httpClient.setAuthToken(sourceToken);
   wsClient.setAuthToken(sourceToken);
   sessionStore.createSession('source-session', 'source-agent');
@@ -928,6 +932,13 @@ function createWorkspaceContext(
     wsClient,
     sessionStore,
     traceStore,
+    sessionConnections: {
+      createForLoad: vi.fn(),
+      register: vi.fn(),
+      get: vi.fn(),
+      discard: vi.fn(),
+      clear: connectionClear,
+    },
     authenticate: async () => ({ token: sourceToken, method: 'explicit_token' }),
   };
 
@@ -935,6 +946,7 @@ function createWorkspaceContext(
     ctx,
     httpClient,
     wsClient,
+    connectionClear,
     sessionClear: vi.spyOn(sessionStore, 'clear'),
     traceClear: vi.spyOn(traceStore, 'clear'),
   };

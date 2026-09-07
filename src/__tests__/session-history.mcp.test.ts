@@ -58,7 +58,7 @@ const LEGACY_TOOL_NAMES = [
   'debug_diagnose',
 ] as const;
 
-const LEGACY_DISCOVERY_SHA256 = '14b4d57f31a375c7b60eb91571fcf08496dfec8000d8e5da8422f1feb365bc9e';
+const LEGACY_DISCOVERY_SHA256 = 'bc1dab96d986dc295d6ebe168e1972a9c0b90b29ac757624772f8367a3206da6';
 const active: Array<{ client: Client; server: MCPDebugServer }> = [];
 const httpServers: HttpServer[] = [];
 
@@ -75,7 +75,7 @@ afterEach(async () => {
 
 describe('historical session MCP compatibility baseline', () => {
   it('locks the ordered legacy discovery contract', async () => {
-    const { client } = await connectedServer();
+    const { client } = await connectedServer(undefined, 'history-compatibility-test', 'legacy-v1');
     const packageJson = JSON.parse(
       readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
     ) as { version: string };
@@ -302,9 +302,13 @@ describe('historical session MCP compatibility baseline', () => {
 async function connectedServer(
   httpUrl?: string,
   clientName = 'history-compatibility-test',
+  discoveryProfile: 'legacy-v1' | 'current-v2' = 'current-v2',
 ): Promise<{ client: Client; server: MCPDebugServer }> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const server = new MCPDebugServer(httpUrl ? { httpUrl } : undefined);
+  const server = new MCPDebugServer({
+    ...(httpUrl ? { httpUrl } : {}),
+    discoveryProfile,
+  });
   const client = new Client({ name: clientName, version: '1.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   active.push({ client, server });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { once } from 'node:events';
 import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import WebSocket, { WebSocketServer } from 'ws';
-import { WebSocketClient } from '../client/websocket-client.js';
+import { MAX_INBOUND_FRAME_BYTES, WebSocketClient } from '../client/websocket-client.js';
 import type { ServerMessage } from '../types.js';
 
 interface WebSocketServerHarness {
@@ -275,8 +275,9 @@ describe('WebSocketClient', () => {
     const preparation = client.prepareReplacement({ authToken: 'token-2' });
     const candidateSocket = await server.nextConnection();
     const prepared = await preparation;
-    candidateSocket.send('x'.repeat(300 * 1024));
-    await waitFor(() => !prepared.isReady());
+    // One frame above the inbound ceiling (1 MiB) must still invalidate the candidate.
+    candidateSocket.send('x'.repeat(MAX_INBOUND_FRAME_BYTES + 1024));
+    await waitFor(() => !prepared.isReady(), 500);
 
     expect(() => prepared.commit()).toThrow(
       'Replacement WebSocket closed before it could be promoted.',
@@ -715,3 +716,31 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     }),
   ]);
 }
+
+test('a replacement candidate survives a replay frame larger than 256 KiB', async () => {
+  const server = await createWebSocketServer();
+  const client = new WebSocketClient({ url: server.url, connectionTimeoutMs: 500 });
+  const messages: ServerMessage[] = [];
+  client.addMessageHandler((message) => messages.push(message));
+  client.setAuthToken('token-1');
+  await client.connect();
+  await server.nextConnection();
+
+  const preparation = client.prepareReplacement({ authToken: 'token-2' });
+  const candidateSocket = await server.nextConnection();
+  // Runtime allows frames up to 512 KB; a buffered trace replay commonly exceeds the old 256 KiB client cap.
+  const bigReplay = JSON.stringify({
+    type: 'info',
+    message: 'x'.repeat(400 * 1024),
+    configured: true,
+  });
+  candidateSocket.send(bigReplay);
+  const prepared = await preparation;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(prepared.isReady()).toBe(true);
+
+  prepared.commit();
+  await waitFor(() => messages.length === 1);
+  expect((messages[0] as { message: string }).message.length).toBe(400 * 1024);
+  client.disconnect();
+});

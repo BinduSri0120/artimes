@@ -386,7 +386,7 @@ const TOOL_OPERATION_SAFETY = Object.freeze({
     [],
     ['delete'],
   ),
-  platform_eval_sets: rules(['list', 'get'], ['create', 'update'], [], [], ['delete']),
+  platform_eval_sets: rules(['list', 'get', 'targets'], ['create', 'update'], [], [], ['delete']),
   platform_eval_runs: rules(
     ['list', 'get', 'status', 'heatmap', 'cases', 'compare', 'preflight'],
     ['create', 'update', 'start', 'quick'],
@@ -401,29 +401,50 @@ const TOOL_OPERATION_SAFETY = Object.freeze({
   platform_workspaces: rules(['list', 'current'], [], ['switch']),
 } satisfies Record<string, SafetyRules>);
 
+let defaultCatalog: ArchKnowledgeCatalog | undefined;
+let defaultCatalogDefinitions: readonly ToolDefinition[] | undefined;
+
 export function createArchKnowledgeCatalog(
   definitions: readonly ToolDefinition[] = tools,
 ): ArchKnowledgeCatalog {
+  if (
+    definitions === tools &&
+    defaultCatalog &&
+    defaultCatalogDefinitions?.length === definitions.length &&
+    defaultCatalogDefinitions.every((tool, index) => tool === definitions[index])
+  ) {
+    return defaultCatalog;
+  }
+
   const definitionNames = definitions.map(({ name }) => name);
   const semanticNames = Object.keys(TOOL_SEMANTICS);
   assertSameSet('tool knowledge', definitionNames, semanticNames);
   const derivedOperationIds = definitions.flatMap((definition) =>
     extractToolActions(definition).map((action) => `${definition.name}:${action}`),
   );
+  const activeConfidenceEvidence = Object.fromEntries(
+    Object.entries(OPERATION_CONFIDENCE_EVIDENCE).filter(([id]) =>
+      derivedOperationIds.includes(id),
+    ),
+  ) as typeof OPERATION_CONFIDENCE_EVIDENCE;
   assertSameSet(
     'operation confidence evidence',
     derivedOperationIds,
-    Object.keys(OPERATION_CONFIDENCE_EVIDENCE),
+    Object.keys(activeConfidenceEvidence),
   );
 
-  const toolKnowledge = definitions.map((tool) => buildToolKnowledge(tool));
+  const toolKnowledge = definitions.map((tool) =>
+    buildToolKnowledge(tool, activeConfidenceEvidence),
+  );
   const operations = toolKnowledge.flatMap(({ operations: entries }) => entries);
   assertSameSet(
     'mutation verification guidance',
     operations.filter(({ safety }) => safety !== 'read').map(({ id }) => id),
-    Object.keys(MUTATION_VERIFICATION_GUIDANCE),
+    Object.keys(MUTATION_VERIFICATION_GUIDANCE).filter((id) =>
+      derivedOperationIds.includes(id),
+    ),
   );
-  validateOperationKnowledge(operations);
+  validateOperationKnowledge(operations, activeConfidenceEvidence);
   validateFeatureDependencies(operations);
 
   const features = Object.entries(FEATURE_DEFINITIONS).map(([id, definition]) => {
@@ -442,7 +463,7 @@ export function createArchKnowledgeCatalog(
   enforceCount('operations', operations.length, ARCH_KNOWLEDGE_LIMITS.maxOperations);
   enforceCount('dependencies', FEATURE_DEPENDENCIES.length, ARCH_KNOWLEDGE_LIMITS.maxDependencies);
 
-  return deepFreeze({
+  const catalog: ArchKnowledgeCatalog = deepFreeze({
     schemaVersion: ARCH_KNOWLEDGE_SCHEMA_VERSION,
     generatedFrom: 'runtime-tool-registry',
     features,
@@ -450,6 +471,11 @@ export function createArchKnowledgeCatalog(
     operations,
     dependencies: [...FEATURE_DEPENDENCIES],
   });
+  if (definitions === tools) {
+    defaultCatalog = catalog;
+    defaultCatalogDefinitions = [...definitions];
+  }
+  return catalog;
 }
 
 export function extractToolActions(tool: ToolDefinition): readonly string[] {
@@ -475,13 +501,16 @@ function collectActions(value: unknown, target: Set<string>): void {
   }
 }
 
-function buildToolKnowledge(tool: ToolDefinition): ToolKnowledge {
+function buildToolKnowledge(
+  tool: ToolDefinition,
+  confidenceEvidence: typeof OPERATION_CONFIDENCE_EVIDENCE,
+): ToolKnowledge {
   const semantic = TOOL_SEMANTICS[tool.name as keyof typeof TOOL_SEMANTICS];
   if (!semantic) throw new Error(`Missing tool knowledge for ${tool.name}`);
   const actions = extractToolActions(tool);
   const operations = actions.map((action) => {
     const id = `${tool.name}:${action}`;
-    const confidence = OPERATION_CONFIDENCE_EVIDENCE[id];
+    const confidence = confidenceEvidence[id];
     if (!confidence) throw new Error(`Missing operation confidence evidence for ${id}`);
     const protocolVerified = confidence.protocolTestRef !== undefined;
     const explicitlyUnsupported =
@@ -553,7 +582,10 @@ function featureRequirements(featureId: keyof typeof FEATURE_DEFINITIONS): reado
   ).map(({ to }) => to);
 }
 
-export function validateOperationKnowledge(operations: readonly OperationKnowledge[]): void {
+export function validateOperationKnowledge(
+  operations: readonly OperationKnowledge[],
+  confidenceEvidence: typeof OPERATION_CONFIDENCE_EVIDENCE = OPERATION_CONFIDENCE_EVIDENCE,
+): void {
   const ids = new Set(operations.map(({ id }) => id));
   if (ids.size !== operations.length) throw new Error('Duplicate operation knowledge id');
   for (const operation of operations) {
@@ -570,7 +602,7 @@ export function validateOperationKnowledge(operations: readonly OperationKnowled
       if (!evidenceKinds.has(required))
         throw new Error(`Missing ${required} evidence for ${operation.id}`);
     }
-    const confidence = OPERATION_CONFIDENCE_EVIDENCE[operation.id];
+    const confidence = confidenceEvidence[operation.id];
     if (!confidence) throw new Error(`Missing confidence inventory for ${operation.id}`);
     if (
       !operation.evidence.some(

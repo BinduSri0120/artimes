@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { DebugContext } from './index.js';
 import { validatePathParam } from '../utils/validate.js';
 import { findSensitiveFieldPath, sanitizeResponse } from '../utils/sanitize.js';
+import { resolveRuntimeOwnedPath } from '../utils/url.js';
 
 export const platformSdkChannelsSchema = z.object({
   action: z.enum(['list_keys', 'create_key', 'list_channels', 'create_channel']),
@@ -44,8 +45,14 @@ export async function platformSdkChannels(
     return failure(`Raw credential field "${unsafePath}" is not allowed in MCP arguments.`);
   }
   const safeProjectId = validatePathParam(args.projectId, 'projectId');
-  const keysPath = `/api/projects/${safeProjectId}/sdk-public-keys`;
-  const channelsPath = `/api/projects/${safeProjectId}/sdk-channels`;
+  const keysPath = resolveRuntimeOwnedPath(
+    ctx.httpClient,
+    `/api/projects/${safeProjectId}/sdk-public-keys`,
+  );
+  const channelsPath = resolveRuntimeOwnedPath(
+    ctx.httpClient,
+    `/api/projects/${safeProjectId}/sdk-channels`,
+  );
 
   try {
     switch (args.action) {

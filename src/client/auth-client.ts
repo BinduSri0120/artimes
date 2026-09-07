@@ -1005,6 +1005,12 @@ async function pollDeviceCredentials(
         );
       }
 
+      if (errorData.error === 'access_denied') {
+        throw new DeviceAuthError(
+          'Device authorization was denied. Run platform_connect again to start a new flow.',
+        );
+      }
+
       throw new DeviceAuthError(
         `Device authorization failed: ${errorData.error || 'unknown error'}`,
       );

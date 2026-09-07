@@ -60,6 +60,7 @@ describe('Arch MCP persona', () => {
     const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
 
     expect(readme).toContain('## Tools');
+    expect(readme).toContain('## `1.5.1` release');
     expect(readme).toContain('## `1.5.0` release');
     expect(readme).toContain('knowledge protocol remains schema version `1`');
     expect(readme).not.toMatch(/## Tools \(\d+\)/);

@@ -169,11 +169,28 @@ async function requestJson(
   if (!response.ok) {
     return {
       ok: false,
-      message: `${init.method ?? 'GET'} ${url} failed: ${response.status} ${response.statusText}`,
+      message: `${init.method ?? 'GET'} ${url} failed: ${response.status} ${response.statusText}${await describeUpstreamError(response)}`,
     };
   }
   if (response.status === 204) return { ok: true, data: {} };
   return { ok: true, data: await response.json() };
+}
+
+/** Keep the Runtime error body (e.g. UNINDEXED_PREDICATE) instead of the bare status line. */
+async function describeUpstreamError(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    if (!text) return '';
+    let body: unknown = text;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // non-JSON error text is preserved as-is after sanitization
+    }
+    return `: ${JSON.stringify(sanitizeResponse(body))}`;
+  } catch {
+    return '';
+  }
 }
 
 function requireTable(args: AgentTablesArgs): string | null {

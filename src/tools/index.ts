@@ -18,6 +18,7 @@ import type {
   ProjectBuilderToolResult,
 } from '../project-building/contracts.js';
 import type { ProjectBuilderStudioTransportDependencies } from '../project-building/studio-transport.js';
+import type { SessionConnectionProvider } from '../client/session-connection-registry.js';
 
 // Import tools
 import { connect, connectSchema } from './connect.js';
@@ -75,8 +76,10 @@ import {
   platformEvalEvaluatorsSchema,
   platformEvalSets,
   platformEvalSetsSchema,
+  legacyPlatformEvalSetsSchema,
   platformEvalRuns,
   platformEvalRunsSchema,
+  legacyPlatformEvalRunsSchema,
 } from './platform-evals.js';
 import { platformConfig, platformConfigSchema } from './platform-config.js';
 import { platformWorkspaces, platformWorkspacesSchema } from './platform-workspaces.js';
@@ -101,6 +104,8 @@ export interface DebugContext {
   httpClient: HttpClient;
   sessionStore: SessionStore;
   traceStore: TraceStore;
+  /** Dedicated Runtime transport ownership for MCP-created debug sessions. */
+  sessionConnections?: SessionConnectionProvider;
   /** Authenticate using cascade: explicit token → stored credentials → device auth */
   authenticate: (options?: AuthOptions) => Promise<AuthResult>;
   /** Immutable provider registry supplied by the server/embedding application. */
@@ -120,6 +125,20 @@ export interface ToolDefinition {
   outputSchema?: JsonSchema;
   annotations?: ToolAnnotations;
   handler: (args: unknown, ctx: DebugContext) => Promise<string | McpToolResult<object>>;
+}
+
+export type ToolDiscoveryProfile = 'legacy-v1' | 'current-v2';
+
+/**
+ * Stable, machine-readable portion of a published MCP tool contract.
+ * Descriptions are intentionally excluded so copy edits do not masquerade as
+ * schema compatibility changes; legacy-v1 still has a separate byte baseline.
+ */
+export interface PublishedToolContract {
+  name: string;
+  inputSchema: JsonSchema;
+  outputSchema?: JsonSchema;
+  annotations?: ToolAnnotations;
 }
 
 type Assert<T extends true> = T;
@@ -455,14 +474,14 @@ Requires HARNESS_API_KEY environment variable.`,
   {
     name: 'platform_eval_sets',
     description:
-      'Manage eval sets through /api/projects/:projectId/evals/sets. Actions: list, get, create, update, delete.',
+      'Manage eval sets and discover execution targets through Studio. Actions: list, get, create, update, delete, targets. Use target for Working copy, environment, deployment, or exact agent-version selection.',
     schema: platformEvalSetsSchema,
     handler: platformEvalSets as (args: unknown, ctx: DebugContext) => Promise<string>,
   },
   {
     name: 'platform_eval_runs',
     description:
-      'Manage eval runs for ABL repair loops. Actions: list, get, create, update, start, cancel, status, heatmap, cases, compare, preflight, quick.',
+      'Manage eval runs for ABL repair loops. Actions: list, get, create, update, start, cancel, status, heatmap, cases, compare, preflight, quick. Create accepts a typed target run override; get/status return the locked tested configuration.',
     schema: platformEvalRunsSchema,
     handler: platformEvalRuns as (args: unknown, ctx: DebugContext) => Promise<string>,
   },
@@ -493,11 +512,108 @@ Requires HARNESS_API_KEY environment variable.`,
   },
 ];
 
+/** The exact tool names and order published by the legacy-v1 profile. */
+export const LEGACY_TOOL_NAMES = [
+  'platform_connect',
+  'debug_list_agents',
+  'debug_load_agent',
+  'debug_send_message',
+  'debug_traces',
+  'debug_session_history',
+  'debug_get_current_state',
+  'debug_get_span_tree',
+  'debug_get_errors',
+  'debug_explain_decision',
+  'debug_get_flow_graph',
+  'debug_list_active_sessions',
+  'debug_session',
+  'debug_docs',
+  'debug_analyze_session',
+  'debug_harness_logs',
+  'platform_project_builder',
+  'platform_project_builder_operations',
+  'platform_projects',
+  'platform_workflows',
+  'platform_arch_sop',
+  'platform_arch_auto_loop',
+  'platform_auth_profiles',
+  'platform_integrations',
+  'platform_mcp_servers',
+  'platform_agents',
+  'platform_versions',
+  'platform_deployments',
+  'platform_sdk_channels',
+  'platform_tools',
+  'agent_tables',
+  'platform_import_export',
+  'platform_validate_package',
+  'platform_package_model',
+  'debug_lint_abl',
+  'debug_why_transcript_failed',
+  'debug_diagnose_transcript',
+  'platform_eval_personas',
+  'platform_eval_scenarios',
+  'platform_eval_evaluators',
+  'platform_eval_sets',
+  'platform_eval_runs',
+  'platform_config',
+  'platform_workspaces',
+  'debug_diagnose',
+] as const;
+
+const LEGACY_TOOL_OVERRIDES: Readonly<
+  Partial<Record<string, Pick<ToolDefinition, 'description' | 'schema'>>>
+> = {
+  platform_eval_sets: {
+    description:
+      'Manage eval sets through /api/projects/:projectId/evals/sets. Actions: list, get, create, update, delete.',
+    schema: legacyPlatformEvalSetsSchema,
+  },
+  platform_eval_runs: {
+    description:
+      'Manage eval runs for ABL repair loops. Actions: list, get, create, update, start, cancel, status, heatmap, cases, compare, preflight, quick.',
+    schema: legacyPlatformEvalRunsSchema,
+  },
+};
+
+/**
+ * Historical discovery is an explicit compatibility profile, not a second
+ * implementation. It reuses the current handlers while freezing the old
+ * published schemas and descriptions for existing MCP clients.
+ */
+export const legacyTools: ToolDefinition[] = LEGACY_TOOL_NAMES.map((name) => {
+  const tool = tools.find((candidate) => candidate.name === name);
+  if (!tool) throw new Error(`Legacy MCP tool is missing from the current registry: ${name}`);
+  return {
+    ...tool,
+    ...(LEGACY_TOOL_OVERRIDES[name] ?? {}),
+  };
+});
+
+export function getTools(profile: ToolDiscoveryProfile = 'current-v2'): ToolDefinition[] {
+  return profile === 'legacy-v1' ? legacyTools : tools;
+}
+
 /**
  * Get a tool by name
  */
-export function getTool(name: string): ToolDefinition | undefined {
-  return tools.find((t) => t.name === name);
+export function getTool(
+  name: string,
+  profile: ToolDiscoveryProfile = 'current-v2',
+): ToolDefinition | undefined {
+  return getTools(profile).find((t) => t.name === name);
+}
+
+/** Return the versioned, per-tool contract surface published through MCP. */
+export function getToolContracts(
+  profile: ToolDiscoveryProfile = 'current-v2',
+): PublishedToolContract[] {
+  return getTools(profile).map((tool) => ({
+    name: tool.name,
+    inputSchema: effectiveInputSchema(tool),
+    ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+    ...(tool.annotations ? { annotations: tool.annotations } : {}),
+  }));
 }
 
 /**

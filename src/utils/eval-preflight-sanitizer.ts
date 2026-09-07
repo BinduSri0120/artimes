@@ -115,17 +115,48 @@ function normalizeStatus(value: unknown): PreflightStatus {
   return 'not_checked';
 }
 
+const MAX_PREFLIGHT_CHECKS = 100;
+const MAX_CHECK_NAME_LENGTH = 128;
+const MAX_TIMESTAMP_LENGTH = 128;
+const MAX_DURATION_MS = 86_400_000;
+const PUBLIC_CHECK_NAME_VALUES = new Set<string>(Object.values(PUBLIC_CHECK_NAMES));
+const PUBLIC_GENERATED_CHECK_NAMES = new Set([
+  'system_check',
+  'system_check_results_storage',
+  'system_check_workflow_engine',
+  'system_check_database',
+  'system_check_cache',
+  'system_check_queue',
+  'system_check_telemetry',
+]);
+
 function sanitizeCheckName(rawName: unknown): string {
   if (typeof rawName !== 'string') {
     return 'system_check';
   }
+
+  if (PUBLIC_GENERATED_CHECK_NAMES.has(rawName)) return rawName;
 
   const evaluatorMatch = /^evaluator_model_(\d+)$/.exec(rawName);
   if (evaluatorMatch) {
     return `evaluator_model_configuration_${evaluatorMatch[1]}`;
   }
 
-  return PUBLIC_CHECK_NAMES[rawName] ?? 'system_check';
+  const mapped = PUBLIC_CHECK_NAMES[rawName];
+  if (mapped) return mapped;
+
+  // IDEMPOTENCE. This payload is sanitized TWICE: once by the Studio evals/preflight route
+  // and again by the MCP tool. A public name is a map VALUE, not a key, so the second pass
+  // used to collapse every check to 'system_check' - destroying the only signal identifying
+  // WHICH check failed. Pass an already-public name through unchanged.
+  if (
+    PUBLIC_CHECK_NAME_VALUES.has(rawName) ||
+    /^evaluator_model_configuration_\d+$/.test(rawName)
+  ) {
+    return rawName;
+  }
+
+  return 'system_check';
 }
 
 function getSanitizedMessage(name: string, status: PreflightStatus): string {
@@ -139,11 +170,23 @@ function getSanitizedMessage(name: string, status: PreflightStatus): string {
     return 'Evaluator model configuration was not checked.';
   }
 
+  if (name.startsWith('system_check_')) {
+    const label = name.slice('system_check_'.length).replace(/_/g, ' ');
+    if (status === 'pass') return `System check "${label}" passed.`;
+    if (status === 'fail') {
+      return `System check "${label}" needs attention before evals can run.`;
+    }
+    if (status === 'warn') return `System check "${label}" should be reviewed before evals run.`;
+    return `System check "${label}" was not completed.`;
+  }
+
   return CHECK_MESSAGES[name]?.[status] ?? DEFAULT_MESSAGES[status];
 }
 
 function sanitizeCode(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !/^[A-Z][A-Z0-9_]{1,63}$/.test(value)) return undefined;
+  if (typeof value !== 'string' || value.length > 64 || !/^[A-Z][A-Z0-9_]{1,63}$/.test(value)) {
+    return undefined;
+  }
   return value;
 }
 
@@ -151,12 +194,13 @@ function normalizeDuration(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
     return 0;
   }
-  return Math.round(value);
+  return Math.min(Math.round(value), MAX_DURATION_MS);
 }
 
 function normalizeTimestamp(value: unknown): string {
-  if (typeof value === 'string' && value.trim().length > 0) {
-    return value;
+  if (typeof value === 'string' && value.length <= MAX_TIMESTAMP_LENGTH) {
+    const candidate = value.trim();
+    if (candidate.length > 0 && Number.isFinite(Date.parse(candidate))) return candidate;
   }
   return new Date().toISOString();
 }
@@ -165,19 +209,42 @@ function normalizeOverall(
   value: unknown,
   checks: SanitizedPreflightCheck[],
 ): PreflightOverallStatus {
-  if (value === 'pass' || value === 'fail' || value === 'warn') {
-    return value;
-  }
-
-  if (checks.some((check) => check.status === 'fail')) return 'fail';
+  // Check evidence is authoritative. Never let a claimed green response override a
+  // failed or incomplete check, because consumers use `overall` as the admission gate.
+  if (checks.length === 0 || checks.some((check) => check.status === 'fail')) return 'fail';
+  if (value === 'fail') return 'fail';
+  if (value !== 'pass' && value !== 'warn') return 'fail';
   if (checks.some((check) => check.status === 'warn' || check.status === 'not_checked')) {
     return 'warn';
   }
-  return 'pass';
+  if (value === 'warn') return 'warn';
+  if (value === 'pass') return 'pass';
+
+  // An all-pass check list without a valid envelope status is still malformed.
+  return 'fail';
 }
 
 function sanitizePreflightCheck(value: unknown): SanitizedPreflightCheck {
-  const check = isRecord(value) ? value : {};
+  if (
+    !isRecord(value) ||
+    typeof value.name !== 'string' ||
+    value.name.trim().length === 0 ||
+    value.name.length > MAX_CHECK_NAME_LENGTH ||
+    (value.status !== 'pass' &&
+      value.status !== 'fail' &&
+      value.status !== 'warn' &&
+      value.status !== 'not_checked')
+  ) {
+    return {
+      name: 'system_check',
+      status: 'fail',
+      code: 'PREFLIGHT_CHECK_UNREADABLE',
+      message: 'A preflight check could not be read; treating eval readiness as NOT ready.',
+      durationMs: 0,
+    };
+  }
+
+  const check = value;
   const status = normalizeStatus(check.status);
   const name = sanitizeCheckName(check.name);
   const code = sanitizeCode(check.code);
@@ -194,8 +261,44 @@ function sanitizePreflightCheck(value: unknown): SanitizedPreflightCheck {
 
 function sanitizeEvalPreflightResult(value: unknown): SanitizedPreflightResult {
   const result = isRecord(value) ? value : {};
-  const checks = Array.isArray(result.checks) ? result.checks.map(sanitizePreflightCheck) : [];
 
+  // FAIL CLOSED. Previously an unreadable payload produced zero checks, and
+  // normalizeOverall() derives 'pass' from zero checks - turning a malformed response into
+  // a fake-green safety gate. Never report ready when the response cannot be read.
+  if (!Array.isArray(result.checks) || result.checks.length === 0) {
+    return {
+      overall: 'fail',
+      checks: [
+        {
+          name: 'system_check',
+          status: 'fail',
+          code: 'PREFLIGHT_RESPONSE_UNREADABLE',
+          message:
+            'Preflight response could not be read; treating as NOT ready. Retry and verify the eval service response shape.',
+          durationMs: 0,
+        },
+      ],
+      timestamp: normalizeTimestamp(result.timestamp),
+    };
+  }
+  if (result.checks.length > MAX_PREFLIGHT_CHECKS) {
+    return {
+      overall: 'fail',
+      checks: [
+        {
+          name: 'system_check',
+          status: 'fail',
+          code: 'PREFLIGHT_RESPONSE_TOO_LARGE',
+          message:
+            'Preflight response contained too many checks; treating eval readiness as NOT ready.',
+          durationMs: 0,
+        },
+      ],
+      timestamp: normalizeTimestamp(result.timestamp),
+    };
+  }
+
+  const checks = result.checks.map(sanitizePreflightCheck);
   return {
     overall: normalizeOverall(result.overall, checks),
     checks,
@@ -210,7 +313,7 @@ export function sanitizeEvalPreflightResponse(value: unknown): unknown {
 
   if ('result' in value) {
     return {
-      ...value,
+      ...(typeof value.success === 'boolean' ? { success: value.success } : {}),
       result: sanitizeEvalPreflightResult(value.result),
     };
   }

@@ -12,6 +12,7 @@ import {
   type ProjectBuilderToolResult,
 } from './contracts.js';
 import { sanitizeResponseBounded } from '../utils/sanitize.js';
+import { WORKFLOW_SOURCE_SANITIZER_POLICY } from '../utils/workflow-source.js';
 
 export const ARCH_MCP_CAPABILITIES_MEDIA_TYPE =
   'application/vnd.kore.arch-mcp-capabilities+json;version=1.1' as const;
@@ -45,6 +46,9 @@ export async function requestProjectBuilderStudio(
         path: request.route.path,
         ...(request.route.body !== undefined ? { body: request.route.body } : {}),
         timeoutMs: request.timeoutMs,
+        ...(requestedDomains(request.domain).includes('workflow')
+          ? { responseSanitizerPolicy: WORKFLOW_SOURCE_SANITIZER_POLICY }
+          : {}),
       },
       dependencies,
     );
@@ -77,6 +81,10 @@ export async function requestProjectBuilderStudio(
           ]
         : [{ action: 'inspect_operation', description: 'Inspect the operation before retrying.' }],
   });
+}
+
+function requestedDomains(domain: string | readonly string[]): readonly string[] {
+  return typeof domain === 'string' ? [domain] : domain;
 }
 
 export async function negotiateProjectBuilderCapability(

@@ -3,6 +3,7 @@ import {
   platformEvalPersonas,
   platformEvalRuns,
   platformEvalScenarios,
+  platformEvalSets,
 } from '../tools/platform-evals.js';
 import type { DebugContext } from '../tools/index.js';
 import type { StudioApiDependencies } from '../utils/studio-api.js';
@@ -26,6 +27,192 @@ const ctx = {
 } as unknown as DebugContext;
 
 describe('platform eval tools', () => {
+  it('discovers execution targets through the existing eval-set MCP surface', async () => {
+    const fetchRecorder = createFetchRecorder(jsonResponse({ success: true, deployments: [] }));
+
+    const raw = await platformEvalSets(
+      {
+        action: 'targets',
+        projectId: 'proj_123',
+        query: { scopeAgentId: 'agent-1', cursor: 'next-page' },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+
+    expect(JSON.parse(raw)).toMatchObject({ success: true });
+    expect(fetchRecorder.calls[0]).toMatchObject({
+      url: 'http://localhost:5173/api/projects/proj_123/evals/targets?scopeAgentId=agent-1&cursor=next-page',
+      options: { method: 'GET' },
+      timeoutMs: 15_000,
+    });
+  });
+
+  it('forwards typed suite and run targets to the authoritative Studio APIs', async () => {
+    const fetchRecorder = createFetchRecorder(jsonResponse({ success: true }));
+
+    await platformEvalSets(
+      {
+        action: 'update',
+        projectId: 'proj_123',
+        setId: 'set-1',
+        body: { name: 'Regression suite' },
+        target: { type: 'environment', environment: 'dev' },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+    await platformEvalRuns(
+      {
+        action: 'create',
+        projectId: 'proj_123',
+        body: { evalSetId: 'set-1' },
+        target: { type: 'deployment', deploymentId: 'deployment-1' },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+
+    expect(JSON.parse(String(fetchRecorder.calls[0]?.options.body))).toMatchObject({
+      name: 'Regression suite',
+      evalTarget: { type: 'environment', environment: 'dev' },
+    });
+    expect(JSON.parse(String(fetchRecorder.calls[1]?.options.body))).toMatchObject({
+      evalSetId: 'set-1',
+      target: { type: 'deployment', deploymentId: 'deployment-1' },
+    });
+  });
+
+  it('preserves the legacy target-less request payloads under current-v2', async () => {
+    const fetchRecorder = createFetchRecorder(jsonResponse({ success: true }));
+
+    await platformEvalSets(
+      {
+        action: 'update',
+        projectId: 'proj_123',
+        setId: 'set-1',
+        body: { name: 'Existing suite' },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+    await platformEvalRuns(
+      {
+        action: 'create',
+        projectId: 'proj_123',
+        body: { evalSetId: 'set-1' },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+
+    expect(JSON.parse(String(fetchRecorder.calls[0]?.options.body))).toEqual({
+      name: 'Existing suite',
+    });
+    expect(JSON.parse(String(fetchRecorder.calls[1]?.options.body))).toEqual({
+      evalSetId: 'set-1',
+    });
+  });
+
+  it('rejects typed targets on MCP actions that cannot apply them', async () => {
+    expect(
+      JSON.parse(
+        await platformEvalSets(
+          {
+            action: 'targets',
+            projectId: 'proj_123',
+            target: { type: 'working_copy' },
+          },
+          ctx,
+        ),
+      ),
+    ).toMatchObject({ success: false, error: expect.stringContaining('create and update') });
+    expect(
+      JSON.parse(
+        await platformEvalRuns(
+          {
+            action: 'start',
+            projectId: 'proj_123',
+            runId: 'run-1',
+            target: { type: 'environment', environment: 'dev' },
+          },
+          ctx,
+        ),
+      ),
+    ).toMatchObject({ success: false, error: expect.stringContaining('create action') });
+  });
+
+  it('rejects duplicate target locations instead of silently overwriting one', async () => {
+    const fetchRecorder = createFetchRecorder(jsonResponse({ success: true }));
+
+    const raw = await platformEvalRuns(
+      {
+        action: 'create',
+        projectId: 'proj_123',
+        body: { evalSetId: 'set-1', target: { type: 'working_copy' } },
+        target: { type: 'environment', environment: 'dev' },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+
+    expect(JSON.parse(raw)).toMatchObject({
+      success: false,
+      error: expect.stringContaining('both fields'),
+    });
+    expect(fetchRecorder.calls).toHaveLength(0);
+  });
+
+  it('rejects a suite target duplicated under the run target key', async () => {
+    const fetchRecorder = createFetchRecorder(jsonResponse({ success: true }));
+
+    const raw = await platformEvalSets(
+      {
+        action: 'update',
+        projectId: 'proj_123',
+        setId: 'set-1',
+        body: { target: { type: 'working_copy' } },
+        target: { type: 'environment', environment: 'dev' },
+      },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+
+    expect(JSON.parse(raw)).toMatchObject({
+      success: false,
+      error: expect.stringContaining('both fields'),
+    });
+    expect(fetchRecorder.calls).toHaveLength(0);
+  });
+
+  it('preserves Studio resolved target snapshots for run status responses', async () => {
+    const authoritative = {
+      success: true,
+      run: {
+        id: 'run-1',
+        targetSnapshot: {
+          requested: { type: 'environment', environment: 'dev' },
+          resolved: {
+            type: 'agent_version',
+            agentId: 'agent-1',
+            agentVersionId: 'version-42',
+            sourceHash: 'sha256:source-42',
+          },
+          locked: true,
+        },
+      },
+    };
+    const fetchRecorder = createFetchRecorder(jsonResponse(authoritative));
+
+    const raw = await platformEvalRuns(
+      { action: 'status', projectId: 'proj_123', runId: 'run-1' },
+      ctx,
+      fetchRecorder.dependencies,
+    );
+
+    expect(JSON.parse(raw)).toEqual({ success: true, data: authoritative });
+  });
+
   it('builds eval run compare queries from structured runIds', async () => {
     const fetchRecorder = createFetchRecorder(jsonResponse({ success: true }));
 
@@ -162,6 +349,8 @@ describe('platform eval tools', () => {
       jsonResponse({
         success: true,
         result: {
+          // Failed checks are authoritative even when an older deployment reports a
+          // contradictory envelope summary.
           overall: 'warn',
           timestamp: '2026-05-21T00:00:00.000Z',
           checks: [
@@ -228,7 +417,7 @@ describe('platform eval tools', () => {
       data: {
         success: true,
         result: {
-          overall: 'warn',
+          overall: 'fail',
           checks: [
             {
               name: 'agent_service_connectivity',

@@ -1,0 +1,15 @@
+{
+  "// why": "Build-only variant: tests, fixtures and snapshots stay in tsconfig.json for typecheck and editors but are not compiled into dist. Lets turbo exclude test files from build inputs (ABLP-4466).",
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/__tests__/**",
+    "src/**/__fixtures__/**",
+    "src/**/__snapshots__/**",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.spec.ts",
+    "src/**/*.spec.tsx"
+  ]
+}

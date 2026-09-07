@@ -126,7 +126,7 @@ const FOCUSED_ACTIONS_BY_TOOL = Object.freeze({
   platform_eval_personas: ['create', 'delete', 'generate', 'get', 'list', 'templates', 'update'],
   platform_eval_scenarios: ['create', 'delete', 'generate', 'get', 'list', 'update'],
   platform_eval_evaluators: ['create', 'delete', 'get', 'list', 'templates', 'update'],
-  platform_eval_sets: ['create', 'delete', 'get', 'list', 'update'],
+  platform_eval_sets: ['create', 'delete', 'get', 'list', 'targets', 'update'],
   platform_eval_runs: [
     'cancel',
     'cases',

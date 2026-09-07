@@ -131,3 +131,32 @@ describe('isRemoteUrl', () => {
     });
   });
 });
+
+describe('toRuntimeOwnedApiPath', () => {
+  test('rewrites Runtime-owned project paths through the Studio passthrough on hosted origins', async () => {
+    const { toRuntimeOwnedApiPath } = await import('../utils/url.js');
+    expect(
+      toRuntimeOwnedApiPath('https://agents-staging.kore.ai', '/api/projects/p1/sessions?limit=5'),
+    ).toBe('/api/runtime/projects/p1/sessions?limit=5');
+    expect(
+      toRuntimeOwnedApiPath('https://agents.kore.ai', '/api/projects/p1/sessions/s1/traces'),
+    ).toBe('/api/runtime/projects/p1/sessions/s1/traces');
+    expect(
+      toRuntimeOwnedApiPath('https://agents.kore.ai', '/api/projects/p1/sdk-public-keys'),
+    ).toBe('/api/runtime/projects/p1/sdk-public-keys');
+  });
+
+  test('leaves direct Runtime (local) targets and non-project paths untouched', async () => {
+    const { toRuntimeOwnedApiPath } = await import('../utils/url.js');
+    expect(toRuntimeOwnedApiPath('http://localhost:3112', '/api/projects/p1/sessions')).toBe(
+      '/api/projects/p1/sessions',
+    );
+    expect(toRuntimeOwnedApiPath('http://127.0.0.1:3112', '/api/projects/p1/sessions')).toBe(
+      '/api/projects/p1/sessions',
+    );
+    expect(toRuntimeOwnedApiPath('https://agents.kore.ai', '/api/agents')).toBe('/api/agents');
+    expect(
+      toRuntimeOwnedApiPath('https://agents.kore.ai', '/api/runtime/projects/p1/sessions'),
+    ).toBe('/api/runtime/projects/p1/sessions');
+  });
+});

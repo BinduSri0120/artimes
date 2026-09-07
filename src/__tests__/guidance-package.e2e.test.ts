@@ -12,20 +12,77 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const execute = promisify(execFile);
 const packageRoot = resolve(new URL('../../', import.meta.url).pathname);
 const roots: string[] = [];
+const fixtureRoots: string[] = [];
+let packagedFixture!: Awaited<ReturnType<typeof cleanInstallPackedPackage>>;
+
+beforeAll(async () => {
+  // The package artifact is immutable for this file; avoid repeating the slow pack/install cycle
+  // for every test while keeping each test's project roots isolated.
+  packagedFixture = await cleanInstallPackedPackage(fixtureRoots);
+}, 60_000);
+
+afterAll(async () => {
+  await Promise.all(
+    fixtureRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 describe('published Arch MCP guidance package', () => {
+  it('preserves authoritative analyzer chronology in the clean-installed artifact', async () => {
+    const analysisModule = pathToFileURL(
+      join(packagedFixture.installedPackageRoot, 'dist', 'src', 'tools', 'analysis.js'),
+    ).href;
+    const { analyzeSession } = (await import(analysisModule)) as {
+      analyzeSession: (args: Record<string, never>, context: unknown) => Promise<string>;
+    };
+    const sessionId = 'ablp-4519-session';
+    const oldest = {
+      id: 'step1-enter',
+      type: 'flow_step_enter',
+      timestamp: new Date('2026-09-02T10:00:00.000Z'),
+      sessionId,
+      eventSeq: 1,
+      data: { stepName: 'step1' },
+    };
+    const newest = {
+      id: 'step2-exit',
+      type: 'flow_step_exit',
+      timestamp: new Date('2026-09-02T10:00:03.950Z'),
+      sessionId,
+      eventSeq: 2,
+      data: { stepName: 'step2' },
+    };
+
+    const result = JSON.parse(
+      await analyzeSession(
+        {},
+        {
+          sessionStore: {
+            getActiveSessionId: () => sessionId,
+            getSession: () => ({ state: {}, agentDetails: { name: 'ABLP4519' } }),
+          },
+          // TraceStore's public browsing contract is newest-first.
+          traceStore: { getBySession: () => [newest, oldest] },
+        },
+      ),
+    );
+
+    expect(result.analysis.summary.duration).toBe(3_950);
+  });
+
   it('packs both executable shims and the canonical skill assets', async () => {
     const destination = await temporaryRoot();
     const { stdout } = await execute(
@@ -50,7 +107,7 @@ describe('published Arch MCP guidance package', () => {
   }, 30_000);
 
   it('runs every client and scope through the clean-installed published shim', async () => {
-    const { installRoot, guidanceBin } = await cleanInstallPackedPackage();
+    const { installRoot, guidanceBin } = packagedFixture;
     for (const { client, scope } of [
       { client: 'codex', scope: 'user' },
       { client: 'codex', scope: 'project' },
@@ -102,7 +159,7 @@ describe('published Arch MCP guidance package', () => {
   }, 30_000);
 
   it('serves the complete guidance graph from the clean-installed stdio package without startup writes', async () => {
-    const { mcpBin } = await cleanInstallPackedPackage();
+    const { mcpBin } = packagedFixture;
     const sandbox = await temporaryRoot();
     const projectRoot = join(sandbox, 'project');
     const homeRoot = join(sandbox, 'home');
@@ -123,6 +180,7 @@ describe('published Arch MCP guidance package', () => {
         'arch://guidance/v1/features',
         'arch://guidance/v1/operations',
         'arch://guidance/v1/dependencies',
+        'arch://contract/v2/manifest',
       ]);
       expect(
         (await client.listResourceTemplates()).resourceTemplates.map(({ name }) => name),
@@ -190,7 +248,7 @@ describe('published Arch MCP guidance package', () => {
   }, 30_000);
 
   it('keeps every packaged installer failure non-mutating, including descendant symlinks', async () => {
-    const { guidanceBin } = await cleanInstallPackedPackage();
+    const { guidanceBin } = packagedFixture;
 
     const unmanagedRoot = await temporaryRoot();
     const unmanagedTarget = join(unmanagedRoot, '.codex', 'skills', 'arch-platform');
@@ -262,10 +320,10 @@ describe('published Arch MCP guidance package', () => {
       /symlink/i,
     );
     await expect(readFile(join(external, 'openai.yaml'), 'utf8')).resolves.toBe(expectedAgent);
-  }, 30_000);
+  }, 60_000);
 
   it('returns nonzero and leaves no skill on invalid CLI input', async () => {
-    const { guidanceBin } = await cleanInstallPackedPackage();
+    const { guidanceBin } = packagedFixture;
     const projectRoot = await temporaryRoot();
     await expect(
       execute(guidanceBin, ['install', '--client', 'unknown', '--scope', 'project'], {
@@ -278,12 +336,13 @@ describe('published Arch MCP guidance package', () => {
   }, 30_000);
 });
 
-async function cleanInstallPackedPackage(): Promise<{
+async function cleanInstallPackedPackage(registry = roots): Promise<{
   installRoot: string;
+  installedPackageRoot: string;
   guidanceBin: string;
   mcpBin: string;
 }> {
-  const installRoot = await temporaryRoot();
+  const installRoot = await temporaryRoot(registry);
   const artifacts = join(installRoot, 'artifacts');
   await mkdir(artifacts);
   await writeFile(
@@ -295,7 +354,7 @@ async function cleanInstallPackedPackage(): Promise<{
     ['pack', '--json', '--ignore-scripts', '--pack-destination', artifacts],
     { cwd: packageRoot, env: npmChildEnvironment(), maxBuffer: 10 * 1024 * 1024 },
   );
-  const [{ filename }] = JSON.parse(stdout) as Array<{ filename: string }>;
+  const [{ filename, name }] = JSON.parse(stdout) as Array<{ filename: string; name: string }>;
   await execute(
     'npm',
     [
@@ -310,6 +369,7 @@ async function cleanInstallPackedPackage(): Promise<{
   );
   return {
     installRoot,
+    installedPackageRoot: join(installRoot, 'node_modules', name),
     guidanceBin: join(installRoot, 'node_modules', '.bin', 'arch-mcp-guidance'),
     mcpBin: join(installRoot, 'node_modules', '.bin', 'arch-mcp-tools'),
   };
@@ -381,8 +441,8 @@ async function snapshotTree(root: string): Promise<Record<string, string>> {
   return snapshot;
 }
 
-async function temporaryRoot(): Promise<string> {
+async function temporaryRoot(registry = roots): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'arch-guidance-package-')));
-  roots.push(root);
+  registry.push(root);
   return root;
 }

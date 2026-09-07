@@ -1,5 +1,5 @@
 import type { DebugContext } from '../tools/index.js';
-import { sanitizeResponse } from './sanitize.js';
+import { sanitizeResponse, type SanitizerPolicy } from './sanitize.js';
 import { fetchWithTimeout } from './fetch.js';
 import { isRemoteUrl } from './url.js';
 
@@ -86,6 +86,7 @@ export async function requestStudioJson(
     body?: unknown;
     timeoutMs?: number;
     headers?: Readonly<Record<string, string>>;
+    responseSanitizerPolicy?: SanitizerPolicy;
   },
   dependencies: StudioApiDependencies = defaultStudioApiDependencies,
 ): Promise<StudioApiResult> {
@@ -105,7 +106,10 @@ export async function requestStudioJson(
     init,
     input.timeoutMs ?? 30_000,
   );
-  const responseBody = sanitizeResponse(await readResponseBody(response));
+  const responseBody = sanitizeResponse(
+    await readResponseBody(response),
+    input.responseSanitizerPolicy,
+  );
 
   const contentType = response.headers.get('content-type');
   if (!response.ok) {

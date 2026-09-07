@@ -13,7 +13,120 @@ export interface EmbeddedDocTopic {
   category: string;
 }
 
+const FALLBACK_SEARCH_STOP_WORDS: readonly string[] = [
+  'a',
+  'after',
+  'and',
+  'are',
+  'between',
+  'do',
+  'does',
+  'for',
+  'how',
+  'i',
+  'in',
+  'is',
+  'it',
+  'of',
+  'one',
+  'the',
+  'to',
+  'what',
+  'when',
+  'with',
+];
+const MIN_FALLBACK_SEARCH_TOKEN_LENGTH = 3;
+const MIN_FALLBACK_SEARCH_TOKEN_MATCHES = 2;
+const FALLBACK_SEARCH_EXCERPT_CONTEXT_CHARS = 80;
+const FALLBACK_SEARCH_EXCERPT_TRAILING_CHARS = 180;
+
+function fallbackSearchTokens(value: string): string[] {
+  return [
+    ...new Set<string>(
+      value
+        .toLowerCase()
+        .split(/[^a-z0-9_]+/u)
+        .filter(
+          (token) =>
+            token.length >= MIN_FALLBACK_SEARCH_TOKEN_LENGTH &&
+            !FALLBACK_SEARCH_STOP_WORDS.includes(token),
+        ),
+    ),
+  ];
+}
+
 export const ABL_DOCS: Record<string, string> = {
+  'abl/flow-lifecycle': `# FLOW Retry and Lifecycle Contract
+
+This embedded page is the offline MCP fallback for the connected Studio topic
+\`abl-reference/flow\`. The connected topic is the authoritative full reference.
+
+Use \`MAX_ATTEMPTS\` with \`ON_EXHAUSTED\` to bound unsuccessful attempts that
+may span customer messages. Runtime consumes an attempt for failed required
+GATHER input, an authored ON_INPUT retry that returns to the protected step, or
+a reasoning customer turn that ends without satisfying EXIT_WHEN. Successfully
+leaving the retry cycle clears the counter. The counter survives session
+serialization and is isolated to the active agent thread.
+
+\`MAX_TURNS\` is different: it limits reasoning/model/tool cycles inside one
+Runtime invocation (one customer turn). It never ends a zone across customer
+messages. Pair both limits when one customer message may require several
+model/tool cycles but the conversation must stop after a bounded number of
+unsuccessful customer messages.
+
+\`EXIT_WHEN\` is evaluated after the reasoning iteration returns. \`always\` is
+the built-in unconditional sentinel (equivalent to \`true\`) on every condition
+surface, so \`EXIT_WHEN: always\` exits the zone on the same turn and follows
+THEN; the THEN target's RESPOND is the authoritative text and the zone reply is
+appended. Only the bare identifier is the sentinel; never name a session
+variable \`always\`. A goal-only zone (no PRESENT) whose THEN path cycles straight
+back into it re-executes on the empty re-entry, so an unconditional exit runs to
+the FLOW iteration ceiling; add a PRESENT or a deterministic wait step.
+
+\`\`\`abl
+FLOW:
+  resolve_request:
+    REASONING: true
+    GOAL: "Resolve the customer's request."
+    EXIT_WHEN: resolution_ready == true
+    MAX_TURNS: 5
+    MAX_ATTEMPTS: 3
+    ON_EXHAUSTED: escalate_to_human
+    THEN: present_resolution
+\`\`\`
+
+For deterministic input retries, an explicit self-transition consumes an
+ON_INPUT retry and creates a new step occurrence. Entry actions such as SET,
+CLEAR, LOG, and DO run again for that occurrence. Restoring a session that is
+merely parked on the step continues the existing occurrence and does not rerun
+those actions.
+
+\`\`\`abl
+FLOW:
+  confirm_transfer:
+    REASONING: false
+    MAX_ATTEMPTS: 3
+    ON_EXHAUSTED: cancel_transfer
+    RESPOND: "Type confirm or cancel."
+    ON_INPUT:
+      - IF: input == "confirm"
+        THEN: execute_transfer
+      - IF: input == "cancel"
+        THEN: cancel_transfer
+      - ELSE:
+        RESPOND: "Please type confirm or cancel."
+        THEN: confirm_transfer
+\`\`\`
+
+A promptless ON_INPUT step is legal. Add ELSE when every message must be
+consumed. Without ELSE, unmatched input remains parked on the same step and the
+compiler emits a warning.
+
+\`execution.max_flow_iterations\` counts accepted step-to-step transitions
+cumulatively across customer messages and restored sessions. Runtime refuses the
+next nonterminal transition that would exceed the limit. Terminal completion and
+an intercepted handoff remain allowed at the exact ceiling; parent and child
+agent threads use independent counters.`,
   'mcp/platform-contract': `# Platform Contract for MCP Repair Tools
 
 The MCP package can inspect local folders, zip archives, or import payloads without requiring callers to manually build a file map.
@@ -200,6 +313,11 @@ Safety rules:
 };
 
 export const DOC_TOPICS: EmbeddedDocTopic[] = [
+  {
+    id: 'abl/flow-lifecycle',
+    title: 'FLOW Retry and Lifecycle Contract',
+    category: 'ABL Fallback',
+  },
   { id: 'mcp/platform-contract', title: 'MCP Platform Contract', category: 'MCP Fallback' },
   {
     id: 'mcp/import-contract',
@@ -235,35 +353,63 @@ export function searchDocumentation(query: string): Array<{
     return [];
   }
 
+  const queryTokens = fallbackSearchTokens(normalized);
   const results: Array<{
     id: string;
     topic: string;
     title: string;
     category: string;
     excerpt: string;
+    score: number;
   }> = [];
 
   for (const topic of DOC_TOPICS) {
     const content = ABL_DOCS[topic.id] ?? '';
-    const titleMatch = topic.title.toLowerCase().includes(normalized);
-    const contentIndex = content.toLowerCase().indexOf(normalized);
-    if (!titleMatch && contentIndex === -1) {
+    const normalizedTitle = topic.title.toLowerCase();
+    const normalizedContent = content.toLowerCase();
+    const titleMatch = normalizedTitle.includes(normalized);
+    const exactContentIndex = normalizedContent.indexOf(normalized);
+    const matchedTokens = queryTokens.filter(
+      (token) => normalizedTitle.includes(token) || normalizedContent.includes(token),
+    );
+    const requiredTokenMatches = Math.min(MIN_FALLBACK_SEARCH_TOKEN_MATCHES, queryTokens.length);
+    if (
+      !titleMatch &&
+      exactContentIndex === -1 &&
+      (requiredTokenMatches === 0 || matchedTokens.length < requiredTokenMatches)
+    ) {
       continue;
     }
 
-    const start = contentIndex === -1 ? 0 : Math.max(0, contentIndex - 80);
+    const firstMatchedToken = matchedTokens.find((token) => normalizedContent.includes(token));
+    const contentIndex =
+      exactContentIndex !== -1
+        ? exactContentIndex
+        : firstMatchedToken
+          ? normalizedContent.indexOf(firstMatchedToken)
+          : -1;
+    const start =
+      contentIndex === -1 ? 0 : Math.max(0, contentIndex - FALLBACK_SEARCH_EXCERPT_CONTEXT_CHARS);
     const end =
       contentIndex === -1
-        ? Math.min(content.length, 180)
-        : Math.min(content.length, contentIndex + normalized.length + 180);
+        ? Math.min(content.length, FALLBACK_SEARCH_EXCERPT_TRAILING_CHARS)
+        : Math.min(
+            content.length,
+            contentIndex +
+              (exactContentIndex !== -1 ? normalized.length : (firstMatchedToken?.length ?? 0)) +
+              FALLBACK_SEARCH_EXCERPT_TRAILING_CHARS,
+          );
     results.push({
       id: topic.id,
       topic: topic.id,
       title: topic.title,
       category: topic.category,
       excerpt: `${start > 0 ? '...' : ''}${content.slice(start, end).trim()}${end < content.length ? '...' : ''}`,
+      score: (titleMatch ? 100 : 0) + (exactContentIndex !== -1 ? 50 : 0) + matchedTokens.length,
     });
   }
 
-  return results;
+  return results
+    .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title))
+    .map(({ score: _score, ...result }) => result);
 }

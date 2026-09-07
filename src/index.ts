@@ -10,6 +10,15 @@ export {
   type MCPDebugServerOptions,
 } from './server.js';
 export {
+  ARCH_CONTRACT_MANIFEST_URI,
+  ARCH_CONTRACT_MEDIA_TYPE,
+  ARCH_CONTRACT_URI_PREFIX,
+  type ArchContractDiscoveryMeta,
+  type ArchContractManifest,
+} from './contract/discovery.js';
+export type { ToolDiscoveryProfile } from './tools/index.js';
+export { evalTargetSchema, type EvalTarget } from './tools/platform-evals.js';
+export {
   ARCH_CAPABILITY_ORDER,
   ARCH_MCP_DESCRIPTION,
   ARCH_MCP_DISPLAY_NAME,
