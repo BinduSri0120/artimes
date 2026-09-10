@@ -4,6 +4,54 @@
 
 It works with any MCP-compatible client (Claude Code, Cursor, VS Code, Codex CLI, and others). The server is exposed to clients under the name **`arch-agent-platform`**, and its tools are prefixed `platform_*` and `debug_*`.
 
+## `1.6.0` release
+
+`@koreai/arch-mcp-tools@1.6.0` is the Artemis 1.6.0 line release. It supersedes the unpublished
+`1.5.2` candidate, so everything below lands on top of `1.5.1`.
+
+**Tool results now match what actually happened.** A failed HTTP call carries the upstream cause
+(for example `STAGING_FAILED: two records share the same unique key`) in the top-level `error`
+instead of only the status line, so a client no longer reports a precise platform diagnosis as a
+generic failure.
+
+`debug_send_message` reports the turn outcome rather than merely that a response frame arrived.
+Every response carries `turnStatus` (`"answered"` or `"failed"`), and a turn the runtime failed
+returns `success: false` with `turnFailures[]` and an explanatory `error` — previously such a turn
+returned `success: true` alongside a fallback apology, so a caller could not tell a working project
+from a broken one. **This is a behavior change for callers that assert on `success`:** a turn that
+genuinely answers is unaffected, but a failed turn now reports failure.
+
+`debug_analyze_session` detects a planned specialist that was never dispatched. Runtime names every
+intended specialist in `multi_intent_plan_built`, but the analyzer previously read only
+`multi_intent_queue_accepted` — so a second request the model planned that never reached queue
+acceptance left no evidence to match, and the analyzer reported `issues: []` on a turn that visibly
+dropped work. The new rule compares the plan against dispatch traces for the same turn and names the
+specialists that never ran. Targets that did reach acceptance stay with the existing
+accepted-but-not-dispatched rule, so one dropped task is never counted twice.
+
+`debug_traces` paginates honestly. It accepts an `offset` alongside `limit`, clamps `limit` to
+`1..1000` and normalizes non-positive or fractional values instead of silently returning the whole
+buffer, and every response reports `total`, `offset`, `limit`, `is_truncated`, and the buffer
+`retention` window — so a caller can tell a complete result from a partial one. `totalMatches` is
+retained for backward compatibility and equals `total`. `debug_get_current_state` and the client
+event buffer are bounded on the same basis.
+
+**Project-import guidance is corrected for new applications.** New MCP-authored packages should
+omit `project.json` unless they have a complete platform-exported v2 manifest; a behavior-profile
+fragment is no longer presented as a complete manifest. Matching platform versions also validate
+and safely normalize legacy sparse v2 manifests instead of failing late with a generic
+`IMPORT_FAILED` response.
+
+This release preserves all 45 public tool names, schemas, discovery hashes, and existing
+operations. The import validation fix is platform-owned; upgrading only the MCP package improves
+authoring guidance but does not replace the matching platform deployment.
+
+For reproducible installation:
+
+```bash
+npx -y @koreai/arch-mcp-tools@1.6.0
+```
+
 ## `1.5.1` release
 
 `@koreai/arch-mcp-tools@1.5.1` is a backward-compatible workflow-fidelity hotfix for the `1.5.x`
@@ -20,8 +68,8 @@ loop `parentId`, edge `targetHandle`, variable namespaces, and nullable input/ou
 Compatibility guarantees for this hotfix:
 
 - the `legacy-v1` discovery profile preserves all 45 historical tools, action names, and schemas;
-- the default `current-v2` profile exposes the target-aware eval contract while retaining all 45
-  existing tool names;
+- the default `current-v2` profile exposes the target-aware eval contract and
+  `platform_config:get_runtime_config` while retaining all 45 existing tool names;
 - existing requests remain valid because every new workflow input field is optional;
 - `readOnly` remains server-owned and is not added to create/update inputs;
 - older platform deployments continue to accept the requests they accepted before, although full
@@ -40,7 +88,8 @@ npx -y @koreai/arch-mcp-tools@1.5.1
 The packaged server defaults to `current-v2`. Embedders can select the historical contract with
 `discoveryProfile: "legacy-v1"`, and the CLI accepts the equivalent
 `--discovery-profile legacy-v1` option. The legacy profile is intended for clients that require the
-pre-target eval schemas; new integrations should use `current-v2`.
+pre-target eval schemas and the pre-ABLP-4433 four-action `platform_config` schema; new integrations
+should use `current-v2`.
 
 Execution targets are typed and supplied only through the target field on eval create/update
 operations. Studio resolves and locks the target for the run, and subsequent get/status responses
@@ -64,9 +113,10 @@ New clients should use this sequence:
 4. Read the returned run `status` or `get` response and treat its locked target snapshot as
    authoritative.
 
-Clients that require the pre-target schema or perform exact schema matching can launch the server
-with `--discovery-profile legacy-v1`. This fallback changes the published MCP contract only; it does
-not migrate project data or alter Runtime execution.
+Clients that require the pre-target schemas, the four-action `platform_config` contract, or perform
+exact schema matching can launch the server with `--discovery-profile legacy-v1`. This fallback
+changes the published MCP contract only; it does not migrate project data or alter Runtime
+execution.
 
 ## `1.5.0` release
 
@@ -112,7 +162,7 @@ args:     -y  @koreai/arch-mcp-tools
 ```
 
 Add it under a server named `arch-agent-platform` using your client's config below. The unpinned
-form follows the npm `latest` tag; use `@koreai/arch-mcp-tools@1.5.1` for a reproducible install.
+form follows the npm `latest` tag; use `@koreai/arch-mcp-tools@1.6.0` for a reproducible install.
 (No environment is baked in — see [Choosing an environment](#choosing-an-environment).)
 
 ### Claude Code
@@ -267,7 +317,7 @@ Create and change platform projects, workflows, agents, tools, auth profiles, in
 | `platform_sdk_channels`               | Create SDK keys and web/mobile/API channels                                      |
 | `platform_tools`                      | Manage tools (list, get, create, update, delete, test)                           |
 | `platform_import_export`              | Import and export projects                                                       |
-| `platform_config`                     | Manage project and LLM configuration                                             |
+| `platform_config`                     | Manage project, project-effective Runtime, and LLM configuration                 |
 | `platform_workspaces`                 | List, switch, and inspect active workspaces                                      |
 | `platform_arch_sop`                   | Drive Studio Arch SOP-build sessions                                             |
 | `platform_arch_auto_loop`             | Drive project-scoped Arch Auto Loop repair workflows                             |

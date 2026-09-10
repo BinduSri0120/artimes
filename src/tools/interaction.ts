@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import type { DebugContext } from './index.js';
+import { summarizeTurnOutcome } from './turn-outcome.js';
 
 // =============================================================================
 // debug_send_message
@@ -56,6 +57,10 @@ export async function sendMessage(args: SendMessageArgs, ctx: DebugContext): Pro
 
   // Update session activity
   ctx.sessionStore.touchSession(sessionId);
+
+  // Bound turn-failure attribution to this message: an error from an earlier
+  // turn in the same session must not mark this one failed.
+  const sentAtMs = Date.now();
 
   if (!waitForResponse) {
     // Fire and forget
@@ -124,14 +129,30 @@ export async function sendMessage(args: SendMessageArgs, ctx: DebugContext): Pro
         if (!resolved) {
           resolved = true;
           cleanup();
+          // A response frame is not the same as an answer: the runtime can end
+          // a turn with a fallback apology after `execution.failed`. Report the
+          // turn outcome so a caller cannot mistake a broken project for a
+          // working one.
+          const outcome = summarizeTurnOutcome(ctx.traceStore.getBySession(sessionId), {
+            sinceMs: sentAtMs,
+          });
           resolve(
             JSON.stringify({
-              success: true,
+              success: outcome.status === 'answered',
+              turnStatus: outcome.status,
               sessionId,
               messageId,
               sentText: text,
               response: responseText,
               responseLength: responseText.length,
+              ...(outcome.failures.length > 0
+                ? {
+                    turnFailures: outcome.failures,
+                    error: `The agent did not complete this turn: ${outcome.failures
+                      .map((failure) => (failure.code ? `${failure.code}: ` : '') + failure.message)
+                      .join('; ')}`,
+                  }
+                : {}),
             }),
           );
         }

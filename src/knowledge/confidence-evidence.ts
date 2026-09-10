@@ -141,7 +141,13 @@ const FOCUSED_ACTIONS_BY_TOOL = Object.freeze({
     'status',
     'update',
   ],
-  platform_config: ['get_llm_config', 'get_settings', 'update_llm_config', 'update_settings'],
+  platform_config: [
+    'get_llm_config',
+    'get_runtime_config',
+    'get_settings',
+    'update_llm_config',
+    'update_settings',
+  ],
   platform_workspaces: ['current', 'list', 'switch'],
   debug_diagnose: ['invoke'],
 } satisfies Record<string, readonly string[]>);

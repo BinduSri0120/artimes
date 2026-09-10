@@ -169,6 +169,9 @@ Payload fields:
 Apply acknowledgement rules:
 - Blocking preview issues must be fixed before apply.
 - Non-blocking issues require acknowledgement.
+- For a new package, omit project.json and let the platform generate it. If project.json is
+  included, it must be a complete platform-exported v2 manifest; a sparse object containing only
+  format_version or entry_agent is not a valid v2 project manifest.
 - The safe apply payload includes previewDigest and all non-blocking issue ids.
 - platform_import_export auto-previews and auto-acknowledges non-blocking issues when confirm: true and no complete manual acknowledgement is supplied.
 - Partial manual acknowledgement is treated as stale by default and replaced by a fresh preview unless autoAcknowledgeNonBlocking is false.
@@ -197,14 +200,23 @@ behavior_profiles/<name>.behavior_profile.abl
 project.json should declare behavior profiles by name with a path, for example:
 
 {
-  "format_version": "2.0",
   "behavior_profiles": {
     "shared_voice": {
+      "name": "shared_voice",
       "path": "behavior_profiles/shared_voice.behavior_profile.abl",
-      "priority": 10
+      "priority": 10,
+      "when_summary": "Always available",
+      "used_by": ["SupportAgent"]
     }
   }
 }
+
+The snippet above is only the behavior_profiles section to merge into a complete exported v2
+project.json. Do not send a sparse project.json containing only format_version, entry_agent, or
+behavior_profiles. For a new MCP-created project, omit project.json and let the platform generate
+the manifest; include project.json only when starting from a complete platform export. Current
+platforms normalize older sparse manifests for compatibility, but MCP authors should not generate
+new packages in that legacy shape.
 
 Compiler/import expectations:
 - The profile document must exist in the package files.

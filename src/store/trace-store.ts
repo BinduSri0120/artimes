@@ -5,7 +5,9 @@
  */
 
 import type { TraceEventWithId, TraceSearchFilter, TraceEventType } from '../types.js';
-import { EventBuffer } from '../client/event-buffer.js';
+import { EventBuffer, type EventBufferRetention } from '../client/event-buffer.js';
+
+export type TraceRetention = EventBufferRetention;
 
 export class TraceStore {
   private globalBuffer: EventBuffer;
@@ -121,5 +123,24 @@ export class TraceStore {
       sessionCount: this.sessionBuffers.size,
       sessionSizes,
     };
+  }
+
+  /**
+   * Return retention metadata for the same bounded source used by a trace read.
+   * A missing session is an empty, non-truncated session buffer.
+   */
+  getRetention(sessionId?: string): TraceRetention {
+    if (sessionId) {
+      return (
+        this.sessionBuffers.get(sessionId)?.getRetention() ?? {
+          maxSize: this.maxSessionBufferSize,
+          retainedCount: 0,
+          evictedCount: 0,
+          isTruncated: false,
+        }
+      );
+    }
+
+    return this.globalBuffer.getRetention();
   }
 }

@@ -493,6 +493,9 @@ describe('ABLP-4438 session transport ownership', () => {
       ),
     ).toEqual({
       success: true,
+      // A response frame alone is not an answer: the envelope now states the
+      // turn outcome, and this session produced no failure events.
+      turnStatus: 'answered',
       sessionId: 'session',
       messageId: 'message-1',
       sentText: 'hi',

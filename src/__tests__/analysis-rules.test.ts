@@ -196,4 +196,146 @@ describe('orchestration analysis rules', () => {
     expect(repeated.issues.map((issue) => issue.title)).toContain('Runaway handoff cycle');
     expect(reset.issues.map((issue) => issue.title)).not.toContain('Runaway handoff cycle');
   });
+
+  test('detects a planned specialist that the turn never dispatched', () => {
+    const result = analyzeOrchestrationFailures([
+      trace(
+        'user',
+        'user_message',
+        { content: 'track my order and change my address' },
+        0,
+        'turn-1',
+      ),
+      trace(
+        'plan',
+        'multi_intent_plan_built',
+        {
+          strategy: 'primary_queue',
+          targetCount: 2,
+          targets: [
+            { label: 'track order', executionTarget: 'OrderSpecialist', kind: 'agent' },
+            { label: 'change address', executionTarget: 'AddressSpecialist', kind: 'agent' },
+          ],
+        },
+        1,
+        'turn-1',
+      ),
+      trace('handoff-order', 'handoff', { targetAgent: 'OrderSpecialist' }, 2, 'turn-1'),
+      trace(
+        'final',
+        'agent_response',
+        { content: 'Your order arrives Friday.', agentName: 'Concierge' },
+        3,
+        'turn-1',
+      ),
+    ]);
+
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({
+        title: 'Planned specialist was never dispatched',
+        eventId: 'plan',
+      }),
+    );
+    expect(
+      result.issues.find((issue) => issue.title === 'Planned specialist was never dispatched')
+        ?.description,
+    ).toContain('AddressSpecialist');
+  });
+
+  test('stays quiet when every planned specialist is dispatched', () => {
+    const result = analyzeOrchestrationFailures([
+      trace(
+        'plan',
+        'multi_intent_plan_built',
+        {
+          targetCount: 2,
+          targets: [
+            { executionTarget: 'OrderSpecialist' },
+            { executionTarget: 'AddressSpecialist' },
+          ],
+        },
+        1,
+        'turn-1',
+      ),
+      trace('handoff-order', 'handoff', { targetAgent: 'OrderSpecialist' }, 2, 'turn-1'),
+      trace('handoff-address', 'handoff', { targetAgent: 'AddressSpecialist' }, 3, 'turn-1'),
+      trace('final', 'agent_response', { content: 'Both done.' }, 4, 'turn-1'),
+    ]);
+
+    expect(result.issues.map((issue) => issue.title)).not.toContain(
+      'Planned specialist was never dispatched',
+    );
+  });
+
+  test('leaves an accepted-but-undispatched target to the queue rule instead of double-reporting', () => {
+    const result = analyzeOrchestrationFailures([
+      trace(
+        'plan',
+        'multi_intent_plan_built',
+        {
+          targetCount: 2,
+          targets: [
+            { executionTarget: 'OrderSpecialist' },
+            { executionTarget: 'AddressSpecialist' },
+          ],
+        },
+        1,
+        'turn-1',
+      ),
+      trace('handoff-order', 'handoff', { targetAgent: 'OrderSpecialist' }, 2, 'turn-1'),
+      trace(
+        'accepted',
+        'multi_intent_queue_accepted',
+        { targetAgent: 'AddressSpecialist', label: 'change address' },
+        3,
+        'turn-1',
+      ),
+      trace('final', 'agent_response', { content: 'Order handled.' }, 4, 'turn-1'),
+    ]);
+
+    expect(result.issues.map((issue) => issue.title)).not.toContain(
+      'Planned specialist was never dispatched',
+    );
+    expect(result.issues.map((issue) => issue.title)).toContain(
+      'Accepted queued task was not dispatched',
+    );
+  });
+
+  test('ignores a single-target plan and an unclosed turn', () => {
+    const singleTarget = analyzeOrchestrationFailures([
+      trace(
+        'plan',
+        'multi_intent_plan_built',
+        {
+          targetCount: 1,
+          targets: [{ executionTarget: 'OrderSpecialist' }],
+        },
+        1,
+        'turn-1',
+      ),
+      trace('final', 'agent_response', { content: 'Done.' }, 2, 'turn-1'),
+    ]);
+    const stillRunning = analyzeOrchestrationFailures([
+      trace(
+        'plan',
+        'multi_intent_plan_built',
+        {
+          targetCount: 2,
+          targets: [
+            { executionTarget: 'OrderSpecialist' },
+            { executionTarget: 'AddressSpecialist' },
+          ],
+        },
+        1,
+        'turn-1',
+      ),
+      trace('handoff-order', 'handoff', { targetAgent: 'OrderSpecialist' }, 2, 'turn-1'),
+    ]);
+
+    for (const result of [singleTarget, stillRunning]) {
+      expect(result.issues.map((issue) => issue.title)).not.toContain(
+        'Planned specialist was never dispatched',
+      );
+    }
+  });
 });

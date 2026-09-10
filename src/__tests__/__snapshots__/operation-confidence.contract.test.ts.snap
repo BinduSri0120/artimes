@@ -396,6 +396,7 @@ exports[`operation confidence focused evidence > debug_send_message:invoke match
     "sentText",
     "sessionId",
     "success",
+    "turnStatus",
   ],
 }
 `;
@@ -472,8 +473,13 @@ exports[`operation confidence focused evidence > debug_traces:invoke matches its
     "count",
     "events",
     "filters",
+    "is_truncated",
+    "limit",
+    "offset",
+    "retention",
     "sessionId",
     "success",
+    "total",
     "totalMatches",
   ],
 }
@@ -908,6 +914,19 @@ exports[`operation confidence focused evidence > platform_config:get_llm_config 
     "http:GET:/api/projects/projectId-1/llm-config",
   ],
   "operationId": "platform_config:get_llm_config",
+  "outcomeKeys": [
+    "data",
+    "success",
+  ],
+}
+`;
+
+exports[`operation confidence focused evidence > platform_config:get_runtime_config matches its schema, handler outcome, and transport-effect contract 1`] = `
+{
+  "effects": [
+    "http:GET:/api/projects/projectId-1/runtime-config/ai-safe",
+  ],
+  "operationId": "platform_config:get_runtime_config",
   "outcomeKeys": [
     "data",
     "success",

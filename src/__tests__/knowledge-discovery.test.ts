@@ -12,7 +12,7 @@ const CURRENT_V2_CONTRACT_SHA256 = {
   debug_list_agents: '5896f4be1483c1474b89b9b84c2af9de1ad61a1df5032a24bdc4afd026778bf1',
   debug_load_agent: '576e3e2639016d43186edb0c787bf0c1cc8339f2f68a05b23677137fe0296f78',
   debug_send_message: '02b05ab977e1dded2e7033923fe7a556478945f418506d0a0f8b7249c4d9f2d7',
-  debug_traces: '0a9b76ae99a00ab4e0e96132b4d1a9095822da684f1df76e62b1173c287266cc',
+  debug_traces: 'ec152bd60e9790723854fb0406002c95173edc40365f6b3d276a99080670d4d5',
   debug_session_history: 'a56832e3522a41f70126038101815e81210c7b0e921c35da290d17fe5bb3b4f8',
   debug_get_current_state: 'f71e3e0128d490518ed8432fa0af5fefe30fe61b14f8d136ec003ffb555ab533',
   debug_get_span_tree: '014e1ab92fa2245fa90d57b4f80c46c01305826c7cca6b211f0c22b77ebd5670',
@@ -25,7 +25,8 @@ const CURRENT_V2_CONTRACT_SHA256 = {
   debug_analyze_session: '8cfbd2d93a6c211fbef181898c7cf03ffd9e563f1a0657ce727692df185d891c',
   debug_harness_logs: 'd4b09aa51d7889721fb9e230851b768ad8287dfe2340106e1289e12be629d344',
   platform_project_builder: 'e0f6db20645311be111a6539dcd358f658276c7a3fa0d6b6192cd940cc7b5286',
-  platform_project_builder_operations: '940480e4d15b158bd7209b748d36b446f37bc713530e67191fee23d73a48e967',
+  platform_project_builder_operations:
+    '940480e4d15b158bd7209b748d36b446f37bc713530e67191fee23d73a48e967',
   platform_projects: '15b4326946d86a44be013ba55938d4d789fedf0d12db175c0819aee6009b3949',
   platform_workflows: '0c3957c6f6b95b6c2c739904f93e2329c7d2e7723012f182278140f796132d89',
   platform_arch_sop: 'f12931d03544158db560e546e06edcd033fa90d5d77355b1017900e4f886f363',
@@ -50,7 +51,7 @@ const CURRENT_V2_CONTRACT_SHA256 = {
   platform_eval_evaluators: '34c85d40e60965791e91811c801b2ad6cce62cdffb6a274b4456192e49983ae3',
   platform_eval_sets: 'af2205ba68decc56ed1538891d47d7ad523c2b2318b78956582d96e5d148d512',
   platform_eval_runs: '106427c31d949eda0dd377ba8dd9457442b15e220bf6635902abe074af169d1b',
-  platform_config: '991331ed767eb11aa09155fa920090356f859d75e0b74c53ba5ed70817660021',
+  platform_config: '06ba2e7627256b95c15c2eb0dac31a78256cf201393315db74b407b1c6f6bc77',
   platform_workspaces: 'afafcc861bd4101edf86068a25205878ffdec1ada683b2b80c638d543669173d',
   debug_diagnose: '4cd8c99929789f000fad9eed1e259f8bbce15be6812322a947dd1fb7cd45616d',
 } as const;
@@ -98,7 +99,11 @@ describe('Arch knowledge MCP discovery', () => {
       'arch://guidance/v1/dependencies',
       'arch://contract/v2/manifest',
     ]);
-    expect(resources.resources.slice(2, 6).every(({ mimeType }) => mimeType === ARCH_KNOWLEDGE_MEDIA_TYPE)).toBe(true);
+    expect(
+      resources.resources
+        .slice(2, 6)
+        .every(({ mimeType }) => mimeType === ARCH_KNOWLEDGE_MEDIA_TYPE),
+    ).toBe(true);
     expect(resources.resources[6]?.mimeType).toBe(
       'application/vnd.kore.arch-mcp-contract+json;version=2',
     );

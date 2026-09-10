@@ -58,7 +58,7 @@ const LEGACY_TOOL_NAMES = [
   'debug_diagnose',
 ] as const;
 
-const LEGACY_DISCOVERY_SHA256 = 'bc1dab96d986dc295d6ebe168e1972a9c0b90b29ac757624772f8367a3206da6';
+const LEGACY_DISCOVERY_SHA256 = '58bcc8847155d208d009d081f3df8a245b05c8866bdc2240666e77ca8c90c747';
 const active: Array<{ client: Client; server: MCPDebugServer }> = [];
 const httpServers: HttpServer[] = [];
 
@@ -88,12 +88,49 @@ describe('historical session MCP compatibility baseline', () => {
     expect(sha256(legacyTools)).toBe(LEGACY_DISCOVERY_SHA256);
   });
 
+  it('advertises Runtime config reads only in the current discovery profile', async () => {
+    const { client: legacyClient } = await connectedServer(
+      undefined,
+      'legacy-platform-config-contract',
+      'legacy-v1',
+    );
+    const { client: currentClient } = await connectedServer(
+      undefined,
+      'current-platform-config-contract',
+      'current-v2',
+    );
+
+    expect(await platformConfigActions(legacyClient)).toEqual([
+      'get_settings',
+      'update_settings',
+      'get_llm_config',
+      'update_llm_config',
+    ]);
+    expect(await platformConfigActions(currentClient)).toEqual([
+      'get_settings',
+      'update_settings',
+      'get_runtime_config',
+      'get_llm_config',
+      'update_llm_config',
+    ]);
+  });
+
   it('locks representative empty and disconnected live-debug results', async () => {
     const { client } = await connectedServer();
 
     expect(await callJson(client, 'debug_traces', {})).toEqual({
       success: true,
       count: 0,
+      total: 0,
+      offset: 0,
+      limit: 50,
+      is_truncated: false,
+      retention: {
+        max_size: 1000,
+        retained_count: 0,
+        evicted_count: 0,
+        is_truncated: false,
+      },
       sessionId: null,
       events: [],
     });
@@ -313,6 +350,12 @@ async function connectedServer(
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   active.push({ client, server });
   return { client, server };
+}
+
+async function platformConfigActions(client: Client): Promise<unknown> {
+  const listed = await client.listTools();
+  const platformConfig = listed.tools.find(({ name }) => name === 'platform_config');
+  return (platformConfig?.inputSchema.properties?.action as { enum?: unknown } | undefined)?.enum;
 }
 
 function textJson(result: unknown): unknown {

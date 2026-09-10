@@ -6,7 +6,8 @@
 
 import { z } from 'zod';
 import type { DebugContext } from './index.js';
-import type { TraceEventType } from '../types.js';
+import type { TraceEventType, TraceEventWithId } from '../types.js';
+import type { TraceRetention } from '../store/trace-store.js';
 
 // =============================================================================
 // debug_traces — unified get + search
@@ -23,14 +24,39 @@ export const tracesSchema = z.object({
     .number()
     .optional()
     .default(50)
-    .describe('Maximum number of events to return (default: 50)'),
+    .describe(
+      'Maximum events to return. Clamped to 1..1000 (default 50); non-positive or fractional values are normalized, never returning the whole buffer.',
+    ),
+  offset: z
+    .number()
+    .optional()
+    .default(0)
+    .describe(
+      'Events to skip from the start of the matched set, newest first (default 0). Negative/fractional values are normalized to a non-negative integer.',
+    ),
 });
 
-export type TracesArgs = z.infer<typeof tracesSchema>;
+const MAX_TRACE_LIMIT = 1000;
+
+function normalizeLimit(raw: number | undefined): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 50;
+  return Math.min(Math.max(Math.trunc(raw), 1), MAX_TRACE_LIMIT);
+}
+
+function normalizeOffset(raw: number | undefined): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.trunc(raw);
+}
+
+// Input type: limit/offset carry schema defaults, so they are optional to
+// callers. The handler normalizes both (including undefined) before use.
+export type TracesArgs = z.input<typeof tracesSchema>;
 
 export async function traces(args: TracesArgs, ctx: DebugContext): Promise<string> {
   try {
-    const { text, types, agentName, hasError, sessionId, limit = 50 } = args;
+    const { text, types, agentName, hasError, sessionId } = args;
+    const limit = normalizeLimit(args.limit);
+    const offset = normalizeOffset(args.offset);
 
     // Use active session if not specified
     const effectiveSessionId = sessionId || ctx.sessionStore.getActiveSessionId();
@@ -39,7 +65,7 @@ export async function traces(args: TracesArgs, ctx: DebugContext): Promise<strin
       text !== undefined || agentName !== undefined || hasError !== undefined;
 
     if (hasSearchFilters) {
-      // Search mode — use traceStore.search
+      // Search mode — use traceStore.search over the full matched set, then page.
       const events = ctx.traceStore.search(
         {
           text,
@@ -50,53 +76,58 @@ export async function traces(args: TracesArgs, ctx: DebugContext): Promise<strin
         effectiveSessionId || undefined,
       );
 
-      const limitedEvents = events.slice(0, limit);
-
-      const formattedEvents = limitedEvents.map((e) => ({
-        id: e.id,
-        type: e.type,
-        timestamp: e.timestamp,
-        agentName: e.agentName,
-        durationMs: e.durationMs,
-        spanId: e.spanId,
-        data: summarizeData(e.data),
-      }));
+      const total = events.length;
+      const page = events.slice(offset, offset + limit);
+      const formattedEvents = page.map(formatTraceEvent);
+      const retention = resolveTraceRetention(
+        ctx.traceStore,
+        effectiveSessionId || undefined,
+        total,
+      );
+      const pagingTruncated = offset + formattedEvents.length < total;
 
       return JSON.stringify({
         success: true,
         count: formattedEvents.length,
-        totalMatches: events.length,
+        total,
+        // Retained for backward compatibility; equals `total`.
+        totalMatches: total,
+        offset,
+        limit,
+        is_truncated: pagingTruncated || retention.isTruncated,
+        retention: formatRetention(retention),
         sessionId: effectiveSessionId,
         filters: { text, types, agentName, hasError },
         events: formattedEvents,
       });
     }
 
-    // Simple get mode — fetch recent traces
-    let events;
-    if (effectiveSessionId) {
-      events = ctx.traceStore.getBySession(
-        effectiveSessionId,
-        limit,
-        types as TraceEventType[] | undefined,
-      );
-    } else {
-      events = ctx.traceStore.getRecent(limit, types as TraceEventType[] | undefined);
-    }
+    // Simple get mode — read the full matched set from the bounded live buffer,
+    // then page. Passing no limit to the store yields the complete filtered set
+    // so `total`/`offset`/`is_truncated` describe the buffer honestly instead of
+    // returning the whole buffer whenever limit is non-positive.
+    const events = effectiveSessionId
+      ? ctx.traceStore.getBySession(
+          effectiveSessionId,
+          undefined,
+          types as TraceEventType[] | undefined,
+        )
+      : ctx.traceStore.getRecent(undefined, types as TraceEventType[] | undefined);
 
-    const formattedEvents = events.map((e) => ({
-      id: e.id,
-      type: e.type,
-      timestamp: e.timestamp,
-      agentName: e.agentName,
-      durationMs: e.durationMs,
-      spanId: e.spanId,
-      data: summarizeData(e.data),
-    }));
+    const total = events.length;
+    const page = events.slice(offset, offset + limit);
+    const formattedEvents = page.map(formatTraceEvent);
+    const retention = resolveTraceRetention(ctx.traceStore, effectiveSessionId || undefined, total);
+    const pagingTruncated = offset + formattedEvents.length < total;
 
     return JSON.stringify({
       success: true,
       count: formattedEvents.length,
+      total,
+      offset,
+      limit,
+      is_truncated: pagingTruncated || retention.isTruncated,
+      retention: formatRetention(retention),
       sessionId: effectiveSessionId,
       events: formattedEvents,
     });
@@ -112,6 +143,50 @@ export async function traces(args: TracesArgs, ctx: DebugContext): Promise<strin
 // =============================================================================
 // Helpers
 // =============================================================================
+
+function resolveTraceRetention(
+  traceStore: { getRetention?: (sessionId?: string) => TraceRetention },
+  sessionId: string | undefined,
+  fallbackRetainedCount: number,
+): TraceRetention {
+  // Keep compatibility with embedders that provide the pre-retention TraceStore
+  // shape. Such stores cannot prove eviction, so the fallback is deliberately
+  // non-truncated and scoped to the set they returned.
+  return (
+    traceStore.getRetention?.(sessionId) ?? {
+      maxSize: fallbackRetainedCount,
+      retainedCount: fallbackRetainedCount,
+      evictedCount: 0,
+      isTruncated: false,
+    }
+  );
+}
+
+function formatRetention(retention: {
+  maxSize: number;
+  retainedCount: number;
+  evictedCount: number;
+  isTruncated: boolean;
+}): Record<string, unknown> {
+  return {
+    max_size: retention.maxSize,
+    retained_count: retention.retainedCount,
+    evicted_count: retention.evictedCount,
+    is_truncated: retention.isTruncated,
+  };
+}
+
+function formatTraceEvent(e: TraceEventWithId): Record<string, unknown> {
+  return {
+    id: e.id,
+    type: e.type,
+    timestamp: e.timestamp,
+    agentName: e.agentName,
+    durationMs: e.durationMs,
+    spanId: e.spanId,
+    data: summarizeData(e.data),
+  };
+}
 
 /**
  * Summarize event data, truncating long strings

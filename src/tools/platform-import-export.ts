@@ -20,6 +20,7 @@ import { fetchWithTimeout } from '../utils/fetch.js';
 import { validatePathParam } from '../utils/validate.js';
 import { sanitizeResponse } from '../utils/sanitize.js';
 import { loadPackageFiles, readPackageFilesFromData } from '../utils/package-files.js';
+import { buildUpstreamErrorMessage } from './upstream-error-detail.js';
 import {
   buildStudioHeaders,
   deriveStudioUrl,
@@ -90,7 +91,15 @@ async function requestFailed(response: Response, method: string, path: string): 
   return JSON.stringify(
     {
       success: false,
-      error: `${method} ${path} failed: ${response.status} ${response.statusText}`,
+      // Carry the upstream cause in the top-level error: agent callers report
+      // this string, and a bare status line turns a precise platform diagnosis
+      // into "the platform is broken". `body` still holds the full response.
+      error: buildUpstreamErrorMessage(
+        `${method} ${path}`,
+        response.status,
+        response.statusText,
+        body,
+      ),
       status: response.status,
       statusText: response.statusText,
       body: sanitizeResponse(body),

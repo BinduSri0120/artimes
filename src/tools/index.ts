@@ -81,7 +81,11 @@ import {
   platformEvalRunsSchema,
   legacyPlatformEvalRunsSchema,
 } from './platform-evals.js';
-import { platformConfig, platformConfigSchema } from './platform-config.js';
+import {
+  legacyPlatformConfigSchema,
+  platformConfig,
+  platformConfigSchema,
+} from './platform-config.js';
 import { platformWorkspaces, platformWorkspacesSchema } from './platform-workspaces.js';
 import { platformArchSop, platformArchSopSchema } from './platform-arch-sop.js';
 import { platformArchAutoLoop, platformArchAutoLoopSchema } from './platform-arch-auto-loop.js';
@@ -488,7 +492,7 @@ Requires HARNESS_API_KEY environment variable.`,
   {
     name: 'platform_config',
     description:
-      'Manage project configuration. Actions: get_settings (project settings), update_settings (modify settings), get_llm_config (LLM configuration), update_llm_config (modify LLM config).',
+      'Manage project configuration. Actions: get_settings (project settings), update_settings (modify settings), get_runtime_config (fresh project-effective Runtime configuration; agent DSL may further override agent-scoped settings), get_llm_config (LLM configuration), update_llm_config (modify LLM config).',
     schema: platformConfigSchema,
     handler: platformConfig as (args: unknown, ctx: DebugContext) => Promise<string>,
   },
@@ -573,6 +577,11 @@ const LEGACY_TOOL_OVERRIDES: Readonly<
     description:
       'Manage eval runs for ABL repair loops. Actions: list, get, create, update, start, cancel, status, heatmap, cases, compare, preflight, quick.',
     schema: legacyPlatformEvalRunsSchema,
+  },
+  platform_config: {
+    description:
+      'Manage project configuration. Actions: get_settings (project settings), update_settings (modify settings), get_llm_config (LLM configuration), update_llm_config (modify LLM config).',
+    schema: legacyPlatformConfigSchema,
   },
 };
 

@@ -7,12 +7,21 @@
 
 import type { TraceEventWithId, TraceSearchFilter, TraceEventType } from '../types.js';
 
+export interface EventBufferRetention {
+  maxSize: number;
+  retainedCount: number;
+  evictedCount: number;
+  isTruncated: boolean;
+}
+
 export class EventBuffer {
   private buffer: TraceEventWithId[] = [];
   private maxSize: number;
+  private evictedCount = 0;
 
   constructor(maxSize = 1000) {
-    this.maxSize = maxSize;
+    const normalizedMaxSize = Number.isFinite(maxSize) ? Math.trunc(maxSize) : 1000;
+    this.maxSize = Math.max(1, normalizedMaxSize);
   }
 
   /**
@@ -21,6 +30,7 @@ export class EventBuffer {
   push(event: TraceEventWithId): void {
     if (this.buffer.length >= this.maxSize) {
       this.buffer.shift(); // Remove oldest
+      this.evictedCount += 1;
     }
     this.buffer.push(event);
   }
@@ -111,7 +121,9 @@ export class EventBuffer {
       }
     }
 
-    return events;
+    // Search has the same newest-first ordering as getRecent so offset is
+    // stable across filtered and unfiltered reads.
+    return events.reverse();
   }
 
   /**
@@ -145,6 +157,7 @@ export class EventBuffer {
    */
   clear(): void {
     this.buffer = [];
+    this.evictedCount = 0;
   }
 
   /**
@@ -152,5 +165,14 @@ export class EventBuffer {
    */
   size(): number {
     return this.buffer.length;
+  }
+
+  getRetention(): EventBufferRetention {
+    return {
+      maxSize: this.maxSize,
+      retainedCount: this.buffer.length,
+      evictedCount: this.evictedCount,
+      isTruncated: this.evictedCount > 0,
+    };
   }
 }

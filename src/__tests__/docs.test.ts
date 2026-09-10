@@ -35,7 +35,11 @@ describe('Embedded documentation fallback', () => {
     expect(ABL_DOCS['abl/flow-lifecycle']).toContain('promptless ON_INPUT');
     expect(ABL_DOCS['abl/flow-lifecycle']).toContain('max_flow_iterations');
     expect(ABL_DOCS['mcp/import-contract']).toContain('Import Preview and Apply Contract');
+    expect(ABL_DOCS['mcp/import-contract']).toContain('omit project.json');
+    expect(ABL_DOCS['mcp/import-contract']).toContain('sparse object');
     expect(ABL_DOCS['mcp/behavior-profiles']).toContain('Behavior Profile Package Contract');
+    expect(ABL_DOCS['mcp/behavior-profiles']).toContain('omit project.json');
+    expect(ABL_DOCS['mcp/behavior-profiles']).toContain('complete platform export');
     expect(ABL_DOCS['mcp/abl-repair-loop']).toContain('compiledRuntimeConstraints');
     expect(ABL_DOCS['mcp/agent-tables']).toContain('Agent Tables');
     expect(ABL_DOCS['mcp/agent-tables']).toContain('Best-fit use cases');

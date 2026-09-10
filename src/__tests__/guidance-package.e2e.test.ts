@@ -354,7 +354,7 @@ async function cleanInstallPackedPackage(registry = roots): Promise<{
     ['pack', '--json', '--ignore-scripts', '--pack-destination', artifacts],
     { cwd: packageRoot, env: npmChildEnvironment(), maxBuffer: 10 * 1024 * 1024 },
   );
-  const [{ filename, name }] = JSON.parse(stdout) as Array<{ filename: string; name: string }>;
+  const [{ filename }] = JSON.parse(stdout) as Array<{ filename: string }>;
   await execute(
     'npm',
     [
@@ -367,9 +367,12 @@ async function cleanInstallPackedPackage(registry = roots): Promise<{
     ],
     { cwd: installRoot, env: npmChildEnvironment(), maxBuffer: 10 * 1024 * 1024 },
   );
+  const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as {
+    name: string;
+  };
   return {
     installRoot,
-    installedPackageRoot: join(installRoot, 'node_modules', name),
+    installedPackageRoot: join(installRoot, 'node_modules', ...packageJson.name.split('/')),
     guidanceBin: join(installRoot, 'node_modules', '.bin', 'arch-mcp-guidance'),
     mcpBin: join(installRoot, 'node_modules', '.bin', 'arch-mcp-tools'),
   };

@@ -39,6 +39,24 @@ describe('operation confidence focused evidence', () => {
             return Response.json({ link: 'https://download.invalid/log.zip' });
           }
           const capability = url.includes('/api/arch-mcp/capabilities');
+          if (operationId === 'platform_config:get_runtime_config') {
+            return Response.json({
+              success: true,
+              data: {
+                projectId: 'projectId-1',
+                _aiSafeProjection: {
+                  kind: 'runtime_config_ai_safe',
+                  version: 1,
+                  redacted: false,
+                  summarized: false,
+                  redactionCount: 0,
+                  summaryCount: 0,
+                  redactedPaths: [],
+                  summarizedPaths: [],
+                },
+              },
+            });
+          }
           return Response.json(
             capability
               ? {
@@ -302,21 +320,38 @@ function createContext(effects: string[]): DebugContext {
           status: 200,
           statusText: 'OK',
           headers: {},
-          body: path.includes('/traces?')
+          body: path.includes('/runtime-config/ai-safe')
             ? {
                 success: true,
-                total: 0,
-                offset: 0,
-                limit: 1,
-                traces: [],
-                _meta: {
-                  source: 'runtime',
-                  event_count: 0,
-                  is_truncated: false,
-                  source_chain: ['runtime'],
+                data: {
+                  projectId: 'projectId-1',
+                  _aiSafeProjection: {
+                    kind: 'runtime_config_ai_safe',
+                    version: 1,
+                    redacted: false,
+                    summarized: false,
+                    redactionCount: 0,
+                    summaryCount: 0,
+                    redactedPaths: [],
+                    summarizedPaths: [],
+                  },
                 },
               }
-            : { success: true, total: 0, offset: 0, limit: 1, sessions: [], _meta: {} },
+            : path.includes('/traces?')
+              ? {
+                  success: true,
+                  total: 0,
+                  offset: 0,
+                  limit: 1,
+                  traces: [],
+                  _meta: {
+                    source: 'runtime',
+                    event_count: 0,
+                    is_truncated: false,
+                    source_chain: ['runtime'],
+                  },
+                }
+              : { success: true, total: 0, offset: 0, limit: 1, sessions: [], _meta: {} },
         };
       },
       get: async (path: string) => {

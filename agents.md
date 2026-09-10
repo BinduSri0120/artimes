@@ -1,5 +1,60 @@
 # packages/mcp-debug — Agent Learnings
 
+## 2026-09-08 — Live trace retention must be explicit (ABLP-4531)
+
+**Category**: MCP | traces | bounded-buffer | compatibility
+**Learning**: `debug_traces` reads bounded live buffers, not durable history. The
+response therefore keeps `total` scoped to retained matches and adds a
+`retention` object (`max_size`, `retained_count`, `evicted_count`, and
+`is_truncated`). Top-level `is_truncated` is true when either paging or ring
+eviction makes the result incomplete. Search and recent reads are both
+newest-first so offsets have one ordering contract. Preserve the existing input
+schema and legacy response keys when extending this metadata.
+**Files**: `src/client/event-buffer.ts`, `src/store/trace-store.ts`, `src/tools/traces.ts`
+
+**Impact**: Do not describe a bounded MCP read as complete after ring eviction,
+and do not infer a durable total from the retained buffer size. Intentional
+buffer clears reset eviction state.
+
+## 2026-09-07 — Debug tool response/schema contracts are locked in four places (ABLP-4531)
+
+**Category**: MCP | contract | tests
+**Learning**: Changing a debug tool's input schema or response shape trips four
+locked contract gates that must be updated together, or CI fails:
+
+1. `knowledge-discovery.test.ts` `CURRENT_V2_CONTRACT_SHA256` — a per-tool
+   schema sha256 map (schema change → update that tool's digest).
+2. `session-history.mcp.test.ts` `LEGACY_DISCOVERY_SHA256` — sha256 over the
+   legacy tool list minus `debug_session_history` (any tool schema change → new digest).
+3. `operation-confidence.contract.test.ts` snapshot — records each tool's
+   response `outcomeKeys` (response-shape change → `vitest -u`).
+4. `session-history.mcp.test.ts` "locks representative empty ... results" —
+   hard-codes `debug_traces` empty output; add new keys there too.
+   The digests are intentionally not hand-computable; read the assertion's
+   `Received` value and paste it in. `debug_traces` and `debug_get_current_state`
+   now bound/paginate their output (offset + total + is_truncated; state byte-capped
+   with typed truncation markers) — do not "simplify" the bounding away.
+   **Files**: `src/tools/traces.ts`, `src/tools/state.ts`,
+   `src/__tests__/traces-pagination.test.ts`, `src/__tests__/state-bounding.test.ts`
+
+## 2026-09-10 — Analyzer rules must read the plan, not only queue acceptance (ABLP-4432)
+
+**Category**: MCP | analyzer | multi-intent | observability-gap
+**Learning**: `analyzeQueuedDispatches` keys on `multi_intent_queue_accepted`, so it only sees work
+that reached queue _acceptance_. A specialist the model planned but that never got accepted emits no
+acceptance event, so the analyzer honestly returned `issues: []` on a turn that dropped a customer
+request. Runtime already emits the planning evidence — `multi_intent_plan_built`
+(`targetCount`, `targets[]`), `multi_intent_queued` (`queuedIntents[]`), `multi_intent_queue_seeded`
+(`queueEntries[]`), `multi_intent_target_resolved` — and none of it was consumed; those four names
+were not even in `TraceEventType`. No Runtime change was required.
+**Files**: `src/tools/analysis-rules.ts`, `src/types.ts`, `src/__tests__/analysis-rules.test.ts`
+
+**Impact**: When adding an orchestration rule, check which lifecycle stage its trigger event sits
+at; a rule anchored downstream of the failure cannot observe it. Exclude targets already covered by
+a neighbouring rule (acceptance vs plan) so one dropped task yields one issue. `debug_traces`
+`types` is `z.array(z.string())`, not an enum, so adding `TraceEventType` members does not churn the
+four locked contract digests.
+
 ## Package Info
 
 - **Package name**: `@koreai/arch-mcp-tools` (NOT `@abl/mcp-debug`)
@@ -23,6 +78,25 @@
 - `platform_workspaces` tests should inject credential read/write dependencies through the tool handler instead of mocking `src/client/credentials.ts`; keep global `fetch` as the external HTTP boundary.
 - Credential-store tests should use temp `XDG_CONFIG_HOME`/`HOME` directories and real files instead of mocking `node:fs`; the credential path helpers resolve environment variables at call time.
 - WebSocket client tests can use an in-process `WebSocketServer` on `127.0.0.1:0` to validate subprotocols, sends, and dispatch without mocking the `ws` package.
+
+## 2026-09-07 — A Tool Result Must Match What Happened
+
+**Category**: contract | error-handling | observability
+**Learning**: Two failure modes made this package report outcomes it had not verified. (1) A failed HTTP
+call set the top-level `error` to the bare status line and left the cause in `body.error`; agent callers
+report the top-level string, so `STAGING_FAILED: two records share the same unique key` reached a
+customer as "generic IMPORT_FAILED, the platform is broken". (2) `debug_send_message` answered
+`success: true` whenever a response frame arrived, so a runtime turn that ended in a fallback apology
+after `execution.failed` looked identical to a real answer — which also silenced every
+`successField: true` assertion in the QA suite. Derive the reported outcome from evidence the client
+already holds (the response body, the session trace events), and bound turn attribution to the current
+message.
+**Files**: `src/tools/upstream-error-detail.ts`, `src/tools/turn-outcome.ts`,
+`src/tools/platform-import-export.ts`, `src/tools/interaction.ts`
+**Impact**: `debug_send_message` now always returns `turnStatus`, and `success` is `false` for a turn the
+runtime failed — a deliberate contract change; update envelope assertions and the
+operation-confidence snapshot in the same edit. Apply `buildUpstreamErrorMessage` to the remaining
+tools that still return only a status line (the MCPQA-006 family).
 
 ## 2026-09-02 — Analyzer Fixes Need Clean-Installed Artifact Proof
 
@@ -611,3 +685,41 @@ error body and use `DEFAULT_REQUEST_TIMEOUT_MS` (30 s); the 5 s transport defaul
 probes only. The candidate WebSocket accepts frames up to `MAX_INBOUND_FRAME_BYTES` (1 MiB) so a
 buffered replay on token refresh no longer drops the control socket, and a same-identity token
 refresh preserves the debug context (`contextReset:false`).
+
+## 2026-09-04 — Runtime Configuration Reads Stay Project-Effective And Route-Owned
+
+**Category**: configuration | MCP contracts | freshness | compatibility
+**Learning**: Runtime configuration belongs on the existing `platform_config` tool, not project
+lifecycle reads. Request the Runtime-owned `runtime-config/ai-safe` projection and require its
+marker. On a rolling-upgrade 404, accept only a prior canonical raw envelope and expose a small
+primitive-field allowlist; never pass through free text, URLs, lookup values, or arbitrary records.
+Describe the result as project-effective because agent DSL can still
+override agent-scoped settings, especially multi-intent behavior.
+**Files**: `src/tools/platform-config.ts`, `src/tools/index.ts`, `src/knowledge/`
+**Impact**: Future config reads must remain additive, bounded, sanitized, and uncached unless every UI, API,
+import, reset, and automation writer participates in one invalidation contract. Do not attach
+Runtime config to `platform_projects:get` or reimplement defaults in this distributed package.
+
+## 2026-09-07 — Import guidance must distinguish canonical and compatible manifests
+
+**Category**: guidance | import | compatibility | discovery-contract
+**Learning**: New MCP-authored packages should omit `project.json` unless they have a complete
+platform-exported v2 manifest. The platform remains compatible with older sparse v2 manifests, but
+examples must not present a partial section as a complete manifest. Public tool descriptions are
+covered by an immutable discovery digest, so corrective prose belongs in embedded guidance unless a
+deliberate tool-contract version is planned.
+**Files**: `src/docs/index.ts`, `src/__tests__/docs.test.ts`
+**Impact**: Keep the distributed MCP thin and server-owned for import validation. Correct authoring
+instructions without duplicating Project IO schemas or silently changing the public tool discovery
+contract.
+
+## 2026-09-07 — Packed-package tests must follow release scope rewrites
+
+**Category**: release | testing | package-identity
+**Learning**: The dev release flow temporarily rewrites the package from `@koreai` to `@koredev`
+before running `prepublishOnly`. Clean-install tests must derive the installed module directory from
+the current package.json name; hard-coding the production scope passes normal tests but fails the
+official dev dry-run after the artifact installs correctly under the rewritten scope.
+**Files**: `src/__tests__/guidance-package.e2e.test.ts`
+**Impact**: Future artifact-level tests may use stable executable shims from `node_modules/.bin`, but
+direct module imports must resolve through the active packed package identity.

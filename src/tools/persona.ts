@@ -6,7 +6,7 @@
  */
 
 export const ARCH_MCP_SERVER_NAME = 'arch-agent-platform';
-export const ARCH_MCP_SERVER_VERSION = '1.5.1';
+export const ARCH_MCP_SERVER_VERSION = '1.6.0';
 export const ARCH_MCP_DISPLAY_NAME = 'Arch';
 export const ARCH_MCP_LOG_PREFIX = '[Arch MCP]';
 export const ARCH_MCP_ROUTE_KEY_PREFIX = 'arch-mcp';

@@ -348,12 +348,91 @@ function analyzeRunawayExecution(traces: TraceEventWithId[]): OrchestrationAnaly
   return { issues, suggestions };
 }
 
+// A multi-intent plan names every specialist the model intended to reach. The
+// accepted-queue rule below only sees targets that reached queue *acceptance*, so a
+// specialist planned but never accepted leaves no evidence for it to match. Read the
+// plan itself so a dropped second request is reported instead of returning no issues.
+function plannedTargetsOf(trace: TraceEventWithId): string[] {
+  const entries = dataOf(trace).targets;
+  if (!Array.isArray(entries)) return [];
+  const targets: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry === 'string') {
+      if (entry.trim().length > 0) targets.push(entry.trim());
+      continue;
+    }
+    if (entry && typeof entry === 'object') {
+      const target = firstString(entry as Record<string, unknown>, [
+        'executionTarget',
+        'target',
+        'targetAgent',
+        'label',
+      ]);
+      if (target) targets.push(target);
+    }
+  }
+  return [...new Set(targets)];
+}
+
+function analyzePlannedDispatches(traces: TraceEventWithId[]): OrchestrationAnalysisResult {
+  const issues: OrchestrationAnalysisIssue[] = [];
+  const suggestions: string[] = [];
+
+  traces.forEach((trace, index) => {
+    if (trace.type !== 'multi_intent_plan_built') return;
+    const planned = plannedTargetsOf(trace);
+    // A single-target plan is an ordinary turn, not a multi-request scenario.
+    if (planned.length < 2) return;
+
+    const dispatched = new Set<string>();
+    const accepted = new Set<string>();
+    let closed = false;
+
+    for (let cursor = index + 1; cursor < traces.length; cursor += 1) {
+      const candidate = traces[cursor];
+      if (!sameLogicalTurn(trace, candidate) || candidate.type === 'user_message') {
+        closed = true;
+        break;
+      }
+      for (const target of planned) {
+        if (isQueueDispatchEvidence(candidate, target)) dispatched.add(target);
+      }
+      if ((candidate.type as string) === 'multi_intent_queue_accepted') {
+        const acceptedTarget = traceTarget(candidate);
+        if (acceptedTarget) accepted.add(acceptedTarget);
+      }
+      if (isTurnBoundary(candidate) || isFinalResponse(candidate)) {
+        closed = true;
+        break;
+      }
+    }
+
+    // Targets that reached acceptance belong to analyzeQueuedDispatches; reporting them
+    // here too would double-count one dropped task.
+    const missing = planned.filter((target) => !dispatched.has(target) && !accepted.has(target));
+    if (!closed || missing.length === 0) return;
+
+    issues.push({
+      type: 'error',
+      title: 'Planned specialist was never dispatched',
+      description: `The turn planned ${planned.length} specialists (${planned.join(', ')}) but closed without dispatch evidence for ${missing.join(', ')}.`,
+      eventId: trace.id,
+    });
+    suggestions.push(
+      'Compare the multi-intent plan against dispatch traces; every planned specialist must reach queue acceptance and dispatch, or emit an explicit decline.',
+    );
+  });
+
+  return { issues, suggestions };
+}
+
 export function analyzeOrchestrationFailures(
   traces: TraceEventWithId[],
 ): OrchestrationAnalysisResult {
   const analyses = [
     analyzeResponseCopies(traces),
     analyzeQueuedDispatches(traces),
+    analyzePlannedDispatches(traces),
     analyzeSpecialistRoutes(traces),
     analyzeRunawayExecution(traces),
   ];

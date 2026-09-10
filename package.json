@@ -1,6 +1,6 @@
 {
   "name": "@koreai/arch-mcp-tools",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Arch MCP tools for Kore.ai Agent Platform (build, evaluate, optimize, debug, analyze)",
   "type": "module",
   "license": "MIT",

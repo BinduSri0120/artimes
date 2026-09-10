@@ -395,7 +395,7 @@ const TOOL_OPERATION_SAFETY = Object.freeze({
     ['cancel'],
   ),
   platform_config: rules(
-    ['get_settings', 'get_llm_config'],
+    ['get_settings', 'get_runtime_config', 'get_llm_config'],
     ['update_settings', 'update_llm_config'],
   ),
   platform_workspaces: rules(['list', 'current'], [], ['switch']),
@@ -440,9 +440,7 @@ export function createArchKnowledgeCatalog(
   assertSameSet(
     'mutation verification guidance',
     operations.filter(({ safety }) => safety !== 'read').map(({ id }) => id),
-    Object.keys(MUTATION_VERIFICATION_GUIDANCE).filter((id) =>
-      derivedOperationIds.includes(id),
-    ),
+    Object.keys(MUTATION_VERIFICATION_GUIDANCE).filter((id) => derivedOperationIds.includes(id)),
   );
   validateOperationKnowledge(operations, activeConfidenceEvidence);
   validateFeatureDependencies(operations);
